@@ -43,10 +43,11 @@ int main(int argc, char const* argv[])
         param.bufferSize = 16 * 1024;
         param.bufferNumber = 512;
         param.iterations = 128;
-        param.nicNames.assign(static_cast<size_t>(param.deviceNumber), "mlx5_0");
+        // GPUs分别对应的网卡
+        param.nicNames = {"mlx5_0", "mlx5_2", "mlx5_1", "mlx5_3", "mlx5_4", "mlx5_6", "mlx5_5", "mlx5_7"};
         param.rdmaConfig.cqDepth = 1024;
         param.rdmaConfig.qpSendWr = 1024;
-        param.rdmaConfig.qpRecvWr = 1;
+        param.rdmaConfig.qpRecvWr = 1024;
 
         GDRBW_ASSERT(param.nicNames.size() == static_cast<size_t>(param.deviceNumber));
         ChannelManager::Instance().Initialize(param.deviceNumber, param.nicNames,
@@ -54,7 +55,6 @@ int main(int argc, char const* argv[])
 
         std::vector<std::unique_ptr<MemcpyCase>> testcases;
         testcases.emplace_back(std::make_unique<HostToDeviceMemcpyCase>());
-        testcases.emplace_back(std::make_unique<Host0ToDeviceMemcpyCase>());
         testcases.emplace_back(std::make_unique<HostToAllDeviceMemcpyCase>());
         testcases.emplace_back(std::make_unique<AllHostToAllDeviceMemcpyCase>());
 
