@@ -40,7 +40,7 @@ int main(int argc, char const* argv[])
     try {
         auto& param = MemcpyParameterSet::Instance();
         param.deviceNumber = 8;
-        param.bufferSize = 1024 * 1024;
+        param.bufferSize = 16 * 1024;
         param.bufferNumber = 512;
         param.iterations = 128;
         param.nicNames.assign(static_cast<size_t>(param.deviceNumber), "mlx5_0");

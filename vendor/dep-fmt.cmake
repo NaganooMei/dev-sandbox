@@ -6,7 +6,7 @@ set(DEP_FMT_NAME fmt)
 set(DEP_FMT_TAG 11.2.0)
 set(DEP_FMT_GIT_URLS
     https://github.com/fmtlib/fmt.git
-    https://gitcode.com/GitHub_Trending/fm/fmt.git
+#    https://gitcode.com/GitHub_Trending/fm/fmt.git
 )
 
 include(helper.cmake)
