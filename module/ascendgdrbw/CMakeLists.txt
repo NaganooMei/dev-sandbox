@@ -11,4 +11,11 @@ if(ASCEND_RUNTIME_API_PATH AND ASCEND_RUNTIME_LIB AND IBVERBS_INCLUDE_PATH AND I
     )
     target_include_directories(ascendgdrbw PRIVATE ${ASCEND_RUNTIME_API_PATH} ${IBVERBS_INCLUDE_PATH})
     target_link_libraries(ascendgdrbw PRIVATE fmt::fmt ${ASCEND_RUNTIME_LIB} ${IBVERBS_LIB})
+
+    add_executable(ascendgdrbw_h2d_demo
+        h2d_demo.cc
+        rdma_channel.cc
+    )
+    target_include_directories(ascendgdrbw_h2d_demo PRIVATE ${ASCEND_RUNTIME_API_PATH} ${IBVERBS_INCLUDE_PATH})
+    target_link_libraries(ascendgdrbw_h2d_demo PRIVATE fmt::fmt ${ASCEND_RUNTIME_LIB} ${IBVERBS_LIB})
 endif()

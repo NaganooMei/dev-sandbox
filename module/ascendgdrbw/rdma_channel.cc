@@ -205,7 +205,7 @@ ibv_mr* RDMAChannel::RegisterHostMemory(void* buffer, size_t bytes)
     ASCENDGDRBW_ASSERT(buffer != nullptr);
     ASCENDGDRBW_ASSERT(bytes > 0);
     ibv_mr* memoryRegion = ibv_reg_mr(protectionDomain_, buffer, bytes, IBV_ACCESS_LOCAL_WRITE);
-    ASCENDGDRBW_ASSERT(memoryRegion != nullptr);
+    ASCENDGDRBW_ERRNO_ASSERT(memoryRegion != nullptr);
     return memoryRegion;
 }
 
@@ -216,7 +216,7 @@ ibv_mr* RDMAChannel::RegisterDeviceMemory(void* buffer, size_t bytes)
     ASCENDGDRBW_ASCEND_ASSERT(aclrtSetDevice(deviceId_));
     ibv_mr* memoryRegion = ibv_reg_mr(
         protectionDomain_, buffer, bytes, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
-    ASCENDGDRBW_ASSERT(memoryRegion != nullptr);
+    ASCENDGDRBW_ERRNO_ASSERT(memoryRegion != nullptr);
     return memoryRegion;
 }
 
