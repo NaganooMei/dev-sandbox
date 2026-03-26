@@ -35,32 +35,28 @@
 
 namespace {
 
-class AscendHostBuffer {
+class HostBuffer {
 public:
-    explicit AscendHostBuffer(int32_t deviceId, size_t bytes) : deviceId_(deviceId), bytes_(bytes)
+    explicit HostBuffer(size_t bytes) : bytes_(bytes)
     {
         ASCENDGDRBW_ASSERT(bytes_ > 0);
-        ASCENDGDRBW_ASCEND_ASSERT(aclrtSetDevice(deviceId_));
-        ASCENDGDRBW_ASCEND_ASSERT(aclrtMallocHost(&buffer_, bytes_));
+        buffer_ = std::malloc(bytes_);
+        ASCENDGDRBW_ASSERT(buffer_ != nullptr);
         std::memset(buffer_, 0x5A, bytes_);
     }
 
-    ~AscendHostBuffer()
+    ~HostBuffer()
     {
-        if (buffer_ != nullptr) {
-            (void)aclrtSetDevice(deviceId_);
-            (void)aclrtFreeHost(buffer_);
-        }
+        if (buffer_ != nullptr) { std::free(buffer_); }
     }
 
-    AscendHostBuffer(const AscendHostBuffer&) = delete;
-    AscendHostBuffer& operator=(const AscendHostBuffer&) = delete;
+    HostBuffer(const HostBuffer&) = delete;
+    HostBuffer& operator=(const HostBuffer&) = delete;
 
     void* Data() const { return buffer_; }
     size_t Size() const { return bytes_; }
 
 private:
-    int32_t deviceId_ = 0;
     void* buffer_ = nullptr;
     size_t bytes_ = 0;
 };
@@ -124,7 +120,7 @@ int main(int argc, char const* argv[])
         config.qpRecvWr = 1;
         ChannelManager::Instance().Initialize(1, {kNicName}, config);
 
-        AscendHostBuffer hostBuffer{kDeviceId, kBytes};
+        HostBuffer hostBuffer{kBytes};
         AscendDeviceBuffer deviceBuffer{kDeviceId, kBytes};
 
         auto& channel = ChannelManager::Instance().Get(kDeviceId);
