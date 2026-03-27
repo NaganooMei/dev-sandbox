@@ -31,6 +31,7 @@
 #include <fmt/format.h>
 
 #include "rdma_channel.h"
+#include "submit_executor.h"
 
 int main(int argc, char const* argv[])
 {
@@ -50,6 +51,7 @@ int main(int argc, char const* argv[])
         param.rdmaConfig.qpRecvWr = 1024;
 
         GDRBW_ASSERT(param.nicNames.size() == static_cast<size_t>(param.deviceNumber));
+        SubmitExecutor::Instance().Initialize(static_cast<size_t>(param.deviceNumber));
         ChannelManager::Instance().Initialize(param.deviceNumber, param.nicNames,
                                               param.rdmaConfig);
 
@@ -63,10 +65,12 @@ int main(int argc, char const* argv[])
             test->Run();
         }
 
+        SubmitExecutor::Instance().Shutdown();
         ChannelManager::Instance().Shutdown();
         return 0;
     } catch (const std::exception& ex) {
         std::fprintf(stderr, "gdrbw failed: %s\n", ex.what());
+        SubmitExecutor::Instance().Shutdown();
         ChannelManager::Instance().Shutdown();
         return 1;
     }

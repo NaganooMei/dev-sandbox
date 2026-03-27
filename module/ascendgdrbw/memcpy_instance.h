@@ -32,6 +32,7 @@
 
 #include "memcpy_initiator.h"
 #include "memcpy_result.h"
+#include "submit_executor.h"
 
 class MemcpyInstance {
     using Clock = std::chrono::steady_clock;
@@ -55,13 +56,26 @@ public:
         std::vector<double> durations;
         durations.reserve(iterations_);
         for (size_t loop = 0; loop < warmup_ + iterations_; ++loop) {
-            std::unordered_map<int32_t, uint64_t> waitTargets;
             const auto start = Clock::now();
-            for (size_t i = 0; i < srcBuffers.size(); ++i) {
-                const auto pending = memcpyInitiator_->Submit(*srcBuffers[i], *dstBuffers[i]);
-                if (pending.lastWorkRequestId == 0) { continue; }
-                auto& target = waitTargets[pending.deviceId];
-                target = std::max(target, pending.lastWorkRequestId);
+            std::unordered_map<int32_t, uint64_t> waitTargets;
+            if (srcBuffers.size() <= 1) {
+                for (size_t i = 0; i < srcBuffers.size(); ++i) {
+                    const auto pending = memcpyInitiator_->Submit(*srcBuffers[i], *dstBuffers[i]);
+                    if (pending.lastWorkRequestId == 0) { continue; }
+                    auto& target = waitTargets[pending.deviceId];
+                    target = std::max(target, pending.lastWorkRequestId);
+                }
+            } else {
+                std::vector<PendingTransfer> pendings(srcBuffers.size());
+                SubmitExecutor::Instance().Run(srcBuffers.size(), [&](size_t index) {
+                    pendings[index] =
+                        memcpyInitiator_->Submit(*srcBuffers[index], *dstBuffers[index]);
+                });
+                for (const auto& pending : pendings) {
+                    if (pending.lastWorkRequestId == 0) { continue; }
+                    auto& target = waitTargets[pending.deviceId];
+                    target = std::max(target, pending.lastWorkRequestId);
+                }
             }
             for (const auto& waitTarget : waitTargets) {
                 ChannelManager::Instance().Get(waitTarget.first).Wait(waitTarget.second);

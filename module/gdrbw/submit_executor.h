@@ -1,0 +1,171 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2026 relat-ivity
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
+#ifndef GDRBW_SUBMIT_EXECUTOR_H
+#define GDRBW_SUBMIT_EXECUTOR_H
+
+#include <condition_variable>
+#include <cstddef>
+#include <exception>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <vector>
+
+#include "error_handle.h"
+
+class SubmitExecutor {
+    struct Worker {
+        std::mutex mutex;
+        std::condition_variable ready;
+        std::condition_variable finished;
+        std::function<void()> task;
+        std::exception_ptr error;
+        bool hasTask = false;
+        bool done = true;
+        bool stop = false;
+        std::thread thread;
+    };
+
+public:
+    static SubmitExecutor& Instance()
+    {
+        static SubmitExecutor executor;
+        return executor;
+    }
+
+    void Initialize(size_t workerCount)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        GDRBW_ASSERT(!initialized_);
+        GDRBW_ASSERT(workerCount > 0);
+
+        workers_.reserve(workerCount);
+        for (size_t index = 0; index < workerCount; ++index) {
+            auto worker = std::make_unique<Worker>();
+            Worker* workerPtr = worker.get();
+            worker->thread = std::thread([workerPtr]() { WorkerLoop(workerPtr); });
+            workers_.emplace_back(std::move(worker));
+        }
+        initialized_ = true;
+    }
+
+    template <class Task>
+    void Run(size_t workerCount, Task&& task)
+    {
+        std::vector<Worker*> selectedWorkers;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            GDRBW_ASSERT(initialized_);
+            GDRBW_ASSERT(workerCount <= workers_.size());
+            selectedWorkers.reserve(workerCount);
+            for (size_t index = 0; index < workerCount; ++index) {
+                selectedWorkers.push_back(workers_[index].get());
+            }
+        }
+
+        for (size_t index = 0; index < workerCount; ++index) {
+            auto* worker = selectedWorkers[index];
+            {
+                std::lock_guard<std::mutex> lock(worker->mutex);
+                GDRBW_ASSERT(!worker->hasTask);
+                worker->task = [&task, index]() { task(index); };
+                worker->error = nullptr;
+                worker->done = false;
+                worker->hasTask = true;
+            }
+            worker->ready.notify_one();
+        }
+
+        std::exception_ptr error;
+        for (auto* worker : selectedWorkers) {
+            std::unique_lock<std::mutex> lock(worker->mutex);
+            worker->finished.wait(lock, [worker]() { return worker->done; });
+            if (error == nullptr && worker->error != nullptr) { error = worker->error; }
+        }
+
+        if (error != nullptr) { std::rethrow_exception(error); }
+    }
+
+    void Shutdown() noexcept
+    {
+        std::vector<std::unique_ptr<Worker>> workers;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!initialized_) { return; }
+
+            for (const auto& worker : workers_) {
+                {
+                    std::lock_guard<std::mutex> workerLock(worker->mutex);
+                    worker->stop = true;
+                }
+                worker->ready.notify_one();
+            }
+
+            workers.swap(workers_);
+            initialized_ = false;
+        }
+
+        for (auto& worker : workers) {
+            if (worker->thread.joinable()) { worker->thread.join(); }
+        }
+    }
+
+private:
+    static void WorkerLoop(Worker* worker)
+    {
+        while (true) {
+            std::function<void()> task;
+            {
+                std::unique_lock<std::mutex> lock(worker->mutex);
+                worker->ready.wait(lock, [worker]() { return worker->hasTask || worker->stop; });
+                if (worker->stop && !worker->hasTask) { return; }
+                task = std::move(worker->task);
+                worker->hasTask = false;
+            }
+
+            std::exception_ptr error;
+            try {
+                task();
+            } catch (...) {
+                error = std::current_exception();
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(worker->mutex);
+                worker->error = error;
+                worker->done = true;
+            }
+            worker->finished.notify_one();
+        }
+    }
+
+    SubmitExecutor() = default;
+
+    std::mutex mutex_;
+    std::vector<std::unique_ptr<Worker>> workers_;
+    bool initialized_ = false;
+};
+
+#endif  // GDRBW_SUBMIT_EXECUTOR_H

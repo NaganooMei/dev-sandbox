@@ -34,6 +34,7 @@
 
 #include "error_handle.h"
 #include "rdma_channel.h"
+#include "submit_executor.h"
 
 int main(int argc, char const* argv[])
 {
@@ -42,6 +43,7 @@ int main(int argc, char const* argv[])
 
     bool aclInitialized = false;
     auto cleanup = [&aclInitialized]() noexcept {
+        SubmitExecutor::Instance().Shutdown();
         ChannelManager::Instance().Shutdown();
         if (aclInitialized) {
             (void)aclFinalize();
@@ -65,6 +67,7 @@ int main(int argc, char const* argv[])
         param.rdmaConfig.qpRecvWr = 1024;
 
         ASCENDGDRBW_ASSERT(param.nicNames.size() == static_cast<size_t>(param.deviceNumber));
+        SubmitExecutor::Instance().Initialize(static_cast<size_t>(param.deviceNumber));
         ChannelManager::Instance().Initialize(param.deviceNumber, param.nicNames,
                                               param.rdmaConfig);
 
