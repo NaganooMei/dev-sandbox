@@ -11,4 +11,11 @@ if(CUDA_RUNTIME_API_PATH AND CUDA_RUNTIME_LIB AND IBVERBS_INCLUDE_PATH AND IBVER
     )
     target_include_directories(gdrbw PRIVATE ${CUDA_RUNTIME_API_PATH} ${IBVERBS_INCLUDE_PATH})
     target_link_libraries(gdrbw PRIVATE fmt::fmt ${CUDA_RUNTIME_LIB} ${IBVERBS_LIB})
+
+    add_executable(gdrbw_mem_probe_demo
+        mem_probe_demo.cc
+        rdma_channel.cc
+    )
+    target_include_directories(gdrbw_mem_probe_demo PRIVATE ${CUDA_RUNTIME_API_PATH} ${IBVERBS_INCLUDE_PATH})
+    target_link_libraries(gdrbw_mem_probe_demo PRIVATE fmt::fmt ${CUDA_RUNTIME_LIB} ${IBVERBS_LIB})
 endif()
