@@ -37,14 +37,16 @@ struct SharedState {
 void CheckAcl(aclError ret, const char* expr)
 {
     if (ret != ACL_SUCCESS) {
-        throw std::runtime_error(std::string("ACL failed: ") + expr);
+        throw std::runtime_error(std::string("ACL failed: ") + expr +
+                                 " ret=" + std::to_string(static_cast<int>(ret)));
     }
 }
 
 void CheckHccl(HcclResult ret, const char* expr)
 {
     if (ret != HCCL_SUCCESS) {
-        throw std::runtime_error(std::string("HCCL failed: ") + expr);
+        throw std::runtime_error(std::string("HCCL failed: ") + expr +
+                                 " ret=" + std::to_string(static_cast<int>(ret)));
     }
 }
 
@@ -74,6 +76,7 @@ void ReceiverThread(HcclRootInfo* rootInfo)
     HcclOneSidedMemDesc remoteDesc{};
 
     try {
+        std::fprintf(stderr, "[receiver] step=register_device_mem\n");
         // 把 device0 上的这块 HBM 注册给 HCCL one-sided 通信域。
         HCCL_CHECK(HcclRegisterMem(comm,
                                    kSenderRank,
@@ -82,6 +85,7 @@ void ReceiverThread(HcclRootInfo* rootInfo)
                                    kBytes,
                                    &localDesc));
 
+        std::fprintf(stderr, "[receiver] step=exchange_mem_desc\n");
         // 把本端描述符和对端交换。
         HcclOneSidedMemDescs localDescs{&localDesc, 1};
         HcclOneSidedMemDescs remoteDescs{&remoteDesc, 1};
@@ -149,6 +153,7 @@ void SenderThread(HcclRootInfo* rootInfo)
     HcclOneSidedMemDesc remoteDesc{};
 
     try {
+        std::fprintf(stderr, "[sender] step=register_host_mem\n");
         // 把本端 host DRAM 注册给 HCCL。
         HCCL_CHECK(HcclRegisterMem(comm,
                                    kReceiverRank,
@@ -157,6 +162,7 @@ void SenderThread(HcclRootInfo* rootInfo)
                                    kBytes,
                                    &localDesc));
 
+        std::fprintf(stderr, "[sender] step=exchange_mem_desc\n");
         // 和对端交换内存描述符。
         HcclOneSidedMemDescs localDescs{&localDesc, 1};
         HcclOneSidedMemDescs remoteDescs{&remoteDesc, 1};
@@ -168,6 +174,7 @@ void SenderThread(HcclRootInfo* rootInfo)
                                        &remoteDescs,
                                        &actualNum));
 
+        std::fprintf(stderr, "[sender] step=enable_remote_mem_access\n");
         // 把“对端 device memory 描述符”变成本端可访问的 remoteMem。
         HcclOneSidedMem remoteMem{};
         HCCL_CHECK(HcclEnableMemAccess(comm, &remoteDesc, &remoteMem));
@@ -178,6 +185,7 @@ void SenderThread(HcclRootInfo* rootInfo)
                      remoteMem.addr,
                      static_cast<unsigned long long>(remoteMem.size));
 
+        std::fprintf(stderr, "[sender] step=batch_put\n");
         // 这里才是真正的目标路径：
         // host DRAM -> RoCE/RDMA -> remote device memory
         HcclOneSidedOpDesc opDesc{
@@ -255,6 +263,10 @@ int main()
         ACL_CHECK(aclrtFreeHost(rootInfoStorage));
         ACL_CHECK(aclFinalize());
 
+        if (!receiverError.empty() && !senderError.empty()) {
+            throw std::runtime_error(std::string("receiver failed: ") + receiverError +
+                                     " | sender failed: " + senderError);
+        }
         if (!receiverError.empty()) {
             throw std::runtime_error(std::string("receiver failed: ") + receiverError);
         }
