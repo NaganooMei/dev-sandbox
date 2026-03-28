@@ -4,7 +4,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HCCL_REPO="${REPO_ROOT}/hccl"
-ASCEND_ROOT="$("${REPO_ROOT}/module/ascendgdrbw/resolve_ascend_root.sh")"
+ASCEND_ROOT="$(bash "${REPO_ROOT}/module/ascendgdrbw/resolve_ascend_root.sh")"
 BUILD_OUT_DIR="${HCCL_REPO}/build_out"
 CUSTOM_OPS_PATH="./examples/04_custom_ops_p2p"
 RUN_PKG_GLOB="cann-hccl_custom_p2p_linux-*.run"

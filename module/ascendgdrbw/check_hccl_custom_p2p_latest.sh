@@ -3,7 +3,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ASCEND_ROOT="$("${SCRIPT_DIR}/resolve_ascend_root.sh")"
+ASCEND_ROOT="$(bash "${SCRIPT_DIR}/resolve_ascend_root.sh")"
 CUSTOM_P2P_ROOT="${ASCEND_ROOT}/opp/vendors/cust"
 
 find_whitelist_conf() {
