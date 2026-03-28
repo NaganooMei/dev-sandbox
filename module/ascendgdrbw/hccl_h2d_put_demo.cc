@@ -58,25 +58,6 @@ void FillHostBuffer(std::vector<float>& hostBuffer)
     }
 }
 
-void VerifyOneSidedSupport()
-{
-    if (!HcommIsSupportHcclRegisterMem()) {
-        throw std::runtime_error("HcclRegisterMem is not supported");
-    }
-    if (!HcommIsSupportHcclExchangeMemDesc()) {
-        throw std::runtime_error("HcclExchangeMemDesc is not supported");
-    }
-    if (!HcommIsSupportHcclEnableMemAccess()) {
-        throw std::runtime_error("HcclEnableMemAccess is not supported");
-    }
-    if (!HcommIsSupportHcclDisableMemAccess()) {
-        throw std::runtime_error("HcclDisableMemAccess is not supported");
-    }
-    if (!HcommIsSupportHcclBatchPut()) {
-        throw std::runtime_error("HcclBatchPut is not supported");
-    }
-}
-
 void ReceiverThread(HcclRootInfo* rootInfo)
 {
     // rank0 负责在 device0 上准备“目标内存”
@@ -234,8 +215,6 @@ void SenderThread(HcclRootInfo* rootInfo)
 int main()
 {
     try {
-        VerifyOneSidedSupport();
-
         ACL_CHECK(aclInit(nullptr));
 
         uint32_t deviceCount = 0;

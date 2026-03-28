@@ -65,12 +65,6 @@ HcclResult HcclBatchPut(HcclComm comm,
                         uint32_t descNum,
                         aclrtStream stream);
 
-bool HcommIsSupportHcclRegisterMem(void);
-bool HcommIsSupportHcclExchangeMemDesc(void);
-bool HcommIsSupportHcclEnableMemAccess(void);
-bool HcommIsSupportHcclDisableMemAccess(void);
-bool HcommIsSupportHcclBatchPut(void);
-
 }
 
 #endif  // ASCENDGDRBW_HCCL_ONE_SIDED_SERVICES_H
