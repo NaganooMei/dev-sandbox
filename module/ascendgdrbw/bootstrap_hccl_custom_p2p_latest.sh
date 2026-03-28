@@ -84,6 +84,10 @@ export ASCEND_HOME_PATH="${ASCEND_ROOT}"
 export ASCEND_TOOLKIT_HOME="${ASCEND_ROOT}"
 export ASCEND_OPP_PATH="${ASCEND_ROOT}/opp"
 export ASCEND_CUSTOM_OPP_PATH="${ASCEND_ROOT}/opp"
+export ASCEND_CANN_PACKAGE_PATH="${ASCEND_ROOT}"
+export CMAKE_PREFIX_PATH="${ASCEND_ROOT}/lib64/cmake"
+export ASC_DIR="${ASCEND_ROOT}/lib64/cmake"
+export AICPU_DIR="${ASCEND_ROOT}/lib64/cmake"
 
 prepend_path PATH "${ASCEND_ROOT}/bin"
 prepend_path PATH "${ASCEND_ROOT}/compiler/ccec_compiler/bin"
@@ -101,16 +105,23 @@ echo "ASCEND_HOME_PATH=${ASCEND_HOME_PATH}"
 echo "ASCEND_TOOLKIT_HOME=${ASCEND_TOOLKIT_HOME}"
 echo "ASCEND_OPP_PATH=${ASCEND_OPP_PATH}"
 echo "ASCEND_CUSTOM_OPP_PATH=${ASCEND_CUSTOM_OPP_PATH}"
+echo "ASCEND_CANN_PACKAGE_PATH=${ASCEND_CANN_PACKAGE_PATH}"
+echo "CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+echo "ASC_DIR=${ASC_DIR}"
+echo "AICPU_DIR=${AICPU_DIR}"
 
 section "Check Inputs"
 need_file "${HCCL_REPO}"
 need_file "${HCCL_REPO}/build.sh"
 need_file "${HCCL_REPO}/examples/04_custom_ops_p2p/README.md"
 
+section "Clean Old HCCL Build Dirs"
+rm -rf "${HCCL_REPO}/build" "${HCCL_REPO}/build_device" "${HCCL_REPO}/build_out"
+
 section "Build custom_p2p package"
 (
     cd "${HCCL_REPO}"
-    bash build.sh --vendor=cust --ops=p2p --custom_ops_path="${CUSTOM_OPS_PATH}"
+    bash build.sh -p "${ASCEND_ROOT}" --vendor=cust --ops=p2p --custom_ops_path="${CUSTOM_OPS_PATH}"
 )
 
 section "Locate run package"
