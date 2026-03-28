@@ -42,12 +42,24 @@ need_file() {
 
 append_whitelist_entry_if_missing() {
     local file_path="$1"
-    local marker="name:aicpu_hccl_custom_p2p.tar.gz"
+    local marker="^name:aicpu_hccl_custom_p2p.tar.gz$"
 
     need_file "$file_path"
     if grep -q "${marker}" "$file_path"; then
         echo "whitelist entry already exists in ${file_path}"
         return 0
+    fi
+
+    if grep -q "aicpu_hccl_custom_p2p.tar.gz" "$file_path"; then
+        echo "found an existing malformed custom_p2p whitelist entry in ${file_path}; appending a clean block"
+    fi
+
+    if [ -s "$file_path" ]; then
+        local last_byte
+        last_byte="$(tail -c 1 "$file_path" | od -An -t x1 | tr -d ' \n')"
+        if [ "${last_byte}" != "0a" ]; then
+            printf '\n' >> "$file_path"
+        fi
     fi
 
     cat >> "$file_path" <<'EOF'
@@ -84,6 +96,11 @@ configure_npu_smi_if_needed() {
 
     if ! command -v npu-smi >/dev/null 2>&1; then
         echo "skip npu-smi tweaks because npu-smi is not available"
+        return 0
+    fi
+
+    if ! npu-smi set -h 2>&1 | grep -q "custom-op-secverify-enable"; then
+        echo "skip automatic npu-smi custom-op config because this npu-smi version does not expose custom-op-secverify-enable"
         return 0
     fi
 
@@ -160,7 +177,7 @@ fi
 echo "RUN_PKG=${RUN_PKG}"
 
 section "Install custom_p2p package"
-bash "${RUN_PKG}" --install --quiet
+bash "${RUN_PKG}" --install --quiet --install-path="${ASCEND_ROOT}"
 
 section "Patch whitelist config"
 append_whitelist_entry_if_missing "${ASCEND_CANN_CONF}"

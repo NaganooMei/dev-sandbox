@@ -12,6 +12,10 @@ fi
 ASCEND_ROOT="$(bash "${SCRIPT_DIR}/resolve_ascend_root.sh")"
 CUSTOM_P2P_ROOT="${ASCEND_ROOT}/opp/vendors/cust"
 
+if [ ! -d "${CUSTOM_P2P_ROOT}" ] && [ -d "${ASCEND_ROOT}/opp/opp/vendors/cust" ]; then
+    CUSTOM_P2P_ROOT="${ASCEND_ROOT}/opp/opp/vendors/cust"
+fi
+
 find_whitelist_conf() {
     local candidate
     for candidate in \
