@@ -85,6 +85,7 @@ echo "ASCEND_TOOLKIT_HOME=${ASCEND_TOOLKIT_HOME}"
 echo "ASCEND_OPP_PATH=${ASCEND_OPP_PATH}"
 
 section "Configure"
+rm -rf "${BUILD_DIR}"
 cmake -S "${REPO_ROOT}" \
       -B "${BUILD_DIR}" \
       -DCMAKE_BUILD_TYPE=RelWithDebInfo \

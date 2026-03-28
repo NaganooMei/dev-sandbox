@@ -1,11 +1,17 @@
 set(ASCEND_ROOT "/usr/local/Ascend/ascend-toolkit/latest" CACHE PATH "Path to Ascend root directory")
-find_path(ASCEND_RUNTIME_API_PATH acl/acl.h ${ASCEND_ROOT}/include)
-find_library(ASCEND_RUNTIME_LIB ascendcl ${ASCEND_ROOT}/lib64)
-find_path(HCCL_INCLUDE_PATH hccl/hccl.h ${ASCEND_ROOT}/include)
-find_library(HCCL_LIB hccl ${ASCEND_ROOT}/lib64)
-find_path(IBVERBS_INCLUDE_PATH infiniband/verbs.h /usr/include /usr/local/include)
+find_path(ASCEND_RUNTIME_API_PATH acl/acl.h PATHS ${ASCEND_ROOT}/include)
+find_library(ASCEND_RUNTIME_LIB ascendcl PATHS ${ASCEND_ROOT}/lib64)
+find_path(HCCL_INCLUDE_PATH hccl/hccl.h PATHS ${ASCEND_ROOT}/include)
+find_library(HCCL_LIB hccl PATHS ${ASCEND_ROOT}/lib64)
+find_path(IBVERBS_INCLUDE_PATH infiniband/verbs.h PATHS /usr/include /usr/local/include)
 find_library(IBVERBS_LIB ibverbs)
 find_package(Threads REQUIRED)
+
+message(STATUS "ASCEND_ROOT=${ASCEND_ROOT}")
+message(STATUS "ASCEND_RUNTIME_API_PATH=${ASCEND_RUNTIME_API_PATH}")
+message(STATUS "ASCEND_RUNTIME_LIB=${ASCEND_RUNTIME_LIB}")
+message(STATUS "HCCL_INCLUDE_PATH=${HCCL_INCLUDE_PATH}")
+message(STATUS "HCCL_LIB=${HCCL_LIB}")
 
 if(ASCEND_RUNTIME_API_PATH AND ASCEND_RUNTIME_LIB AND IBVERBS_INCLUDE_PATH AND IBVERBS_LIB)
     add_executable(ascendgdrbw
@@ -24,4 +30,6 @@ if(ASCEND_RUNTIME_API_PATH AND ASCEND_RUNTIME_LIB AND HCCL_INCLUDE_PATH AND HCCL
     target_include_directories(ascendgdrbw_hccl_h2d_put_demo PRIVATE ${ASCEND_RUNTIME_API_PATH} ${HCCL_INCLUDE_PATH})
     target_link_libraries(ascendgdrbw_hccl_h2d_put_demo PRIVATE fmt::fmt ${ASCEND_RUNTIME_LIB} ${HCCL_LIB}
                                                                 Threads::Threads)
+else()
+    message(WARNING "Skipping ascendgdrbw_hccl_h2d_put_demo because HCCL headers or library were not found under ${ASCEND_ROOT}")
 endif()
