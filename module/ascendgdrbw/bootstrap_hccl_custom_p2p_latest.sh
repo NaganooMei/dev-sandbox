@@ -4,8 +4,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HCCL_REPO="${REPO_ROOT}/hccl"
-ASCEND_ROOT="/usr/local/Ascend/ascend-toolkit/latest"
-ASCEND_CANN_CONF="/usr/local/Ascend/cann/conf/ascend_package_load.ini"
+ASCEND_ROOT="$("${REPO_ROOT}/module/ascendgdrbw/resolve_ascend_root.sh")"
 BUILD_OUT_DIR="${HCCL_REPO}/build_out"
 CUSTOM_OPS_PATH="./examples/04_custom_ops_p2p"
 RUN_PKG_GLOB="cann-hccl_custom_p2p_linux-*.run"
@@ -56,6 +55,21 @@ EOF
     echo "appended whitelist entry to ${file_path}"
 }
 
+find_whitelist_conf() {
+    local candidate
+    for candidate in \
+        "${ASCEND_ROOT}/conf/ascend_package_load.ini" \
+        "/usr/local/Ascend/cann/conf/ascend_package_load.ini"; do
+        if [ -f "${candidate}" ]; then
+            echo "${candidate}"
+            return 0
+        fi
+    done
+
+    echo "failed to find ascend_package_load.ini" >&2
+    exit 1
+}
+
 configure_npu_smi_if_needed() {
     if [ "${ENABLE_NPU_SMI_TWEAKS}" != "1" ]; then
         echo "skip npu-smi tweaks because ENABLE_NPU_SMI_TWEAKS=${ENABLE_NPU_SMI_TWEAKS}"
@@ -101,6 +115,8 @@ prepend_path LD_LIBRARY_PATH "/usr/local/Ascend/driver/lib64/driver"
 prepend_path PYTHONPATH "${ASCEND_ROOT}/python/site-packages"
 prepend_path PYTHONPATH "${ASCEND_ROOT}/opp/built-in/op_impl/ai_core/tbe"
 
+ASCEND_CANN_CONF="$(find_whitelist_conf)"
+
 echo "ASCEND_HOME_PATH=${ASCEND_HOME_PATH}"
 echo "ASCEND_TOOLKIT_HOME=${ASCEND_TOOLKIT_HOME}"
 echo "ASCEND_OPP_PATH=${ASCEND_OPP_PATH}"
@@ -109,6 +125,7 @@ echo "ASCEND_CANN_PACKAGE_PATH=${ASCEND_CANN_PACKAGE_PATH}"
 echo "CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
 echo "ASC_DIR=${ASC_DIR}"
 echo "AICPU_DIR=${AICPU_DIR}"
+echo "ASCEND_CANN_CONF=${ASCEND_CANN_CONF}"
 
 section "Check Inputs"
 need_file "${HCCL_REPO}"

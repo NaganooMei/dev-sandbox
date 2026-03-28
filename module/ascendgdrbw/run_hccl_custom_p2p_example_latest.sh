@@ -3,7 +3,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-ASCEND_ROOT="/usr/local/Ascend/ascend-toolkit/latest"
+ASCEND_ROOT="$("${REPO_ROOT}/module/ascendgdrbw/resolve_ascend_root.sh")"
 EXAMPLE_DIR="${REPO_ROOT}/hccl/examples/04_custom_ops_p2p/testcase"
 CUSTOM_P2P_LIB_DIR="${ASCEND_ROOT}/opp/vendors/cust/lib64"
 

@@ -2,9 +2,24 @@
 
 set -euo pipefail
 
-ASCEND_ROOT="/usr/local/Ascend/ascend-toolkit/latest"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ASCEND_ROOT="$("${SCRIPT_DIR}/resolve_ascend_root.sh")"
 CUSTOM_P2P_ROOT="${ASCEND_ROOT}/opp/vendors/cust"
-CONF_PATH="/usr/local/Ascend/cann/conf/ascend_package_load.ini"
+
+find_whitelist_conf() {
+    local candidate
+    for candidate in \
+        "${ASCEND_ROOT}/conf/ascend_package_load.ini" \
+        "/usr/local/Ascend/cann/conf/ascend_package_load.ini"; do
+        if [ -f "${candidate}" ]; then
+            echo "${candidate}"
+            return 0
+        fi
+    done
+    echo ""
+}
+
+CONF_PATH="$(find_whitelist_conf)"
 
 section() {
     echo
