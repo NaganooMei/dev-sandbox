@@ -3,6 +3,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "/usr/local/Ascend/cann/set_env.sh" ]; then
+    set +u
+    source /usr/local/Ascend/cann/set_env.sh
+    set -u
+fi
+
 ASCEND_ROOT="$(bash "${SCRIPT_DIR}/resolve_ascend_root.sh")"
 CUSTOM_P2P_ROOT="${ASCEND_ROOT}/opp/vendors/cust"
 

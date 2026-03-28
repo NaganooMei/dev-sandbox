@@ -3,8 +3,14 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HCCL_REPO="${REPO_ROOT}/hccl"
+if [ -f "/usr/local/Ascend/cann/set_env.sh" ]; then
+    set +u
+    source /usr/local/Ascend/cann/set_env.sh
+    set -u
+fi
+
 ASCEND_ROOT="$(bash "${REPO_ROOT}/module/ascendgdrbw/resolve_ascend_root.sh")"
+HCCL_REPO="$(bash "${REPO_ROOT}/module/ascendgdrbw/resolve_hccl_custom_p2p_source.sh")"
 BUILD_OUT_DIR="${HCCL_REPO}/build_out"
 CUSTOM_OPS_PATH="./examples/04_custom_ops_p2p"
 RUN_PKG_GLOB="cann-hccl_custom_p2p_linux-*.run"
@@ -93,7 +99,11 @@ configure_npu_smi_if_needed() {
     done
 }
 
-section "Override Env For latest"
+section "Select Sources"
+echo "ASCEND_ROOT=${ASCEND_ROOT}"
+echo "HCCL_REPO=${HCCL_REPO}"
+
+section "Override Env For selected toolkit"
 export ASCEND_HOME_PATH="${ASCEND_ROOT}"
 export ASCEND_TOOLKIT_HOME="${ASCEND_ROOT}"
 export ASCEND_OPP_PATH="${ASCEND_ROOT}/opp"
