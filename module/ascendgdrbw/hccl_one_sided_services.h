@@ -4,7 +4,7 @@
 #include <cstdint>
 
 #include <acl/acl.h>
-#include <hccl/hccl.h>
+#include <hccl/hccl_comm.h>
 #include <hccl/hccl_types.h>
 
 // These declarations mirror the one-sided HCCL service wrappers found in the
