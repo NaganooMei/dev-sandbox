@@ -3,8 +3,14 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-ASCEND_ROOT="/usr/local/Ascend/ascend-toolkit/latest"
-BUILD_DIR="${REPO_ROOT}/build-latest"
+if [ -f "/usr/local/Ascend/cann/set_env.sh" ]; then
+    set +u
+    source /usr/local/Ascend/cann/set_env.sh
+    set -u
+fi
+
+ASCEND_ROOT="$(bash "${REPO_ROOT}/module/ascendgdrbw/resolve_ascend_root.sh")"
+BUILD_DIR="${REPO_ROOT}/build-hccl-h2d"
 TARGET="ascendgdrbw_hccl_h2d_put_demo"
 BIN_PATH="${BUILD_DIR}/module/ascendgdrbw/${TARGET}"
 
@@ -24,10 +30,43 @@ prepend_path() {
     fi
 }
 
-section "Override Env For latest"
+strip_ascend_paths() {
+    local var_name="$1"
+    local old_value="${!var_name-}"
+    local filtered=""
+    local part
+
+    IFS=':' read -r -a parts <<< "$old_value"
+    for part in "${parts[@]}"; do
+        if [ -z "$part" ]; then
+            continue
+        fi
+        case "$part" in
+            /usr/local/Ascend/*)
+                continue
+                ;;
+        esac
+        if [ -n "$filtered" ]; then
+            filtered="${filtered}:$part"
+        else
+            filtered="$part"
+        fi
+    done
+
+    export "${var_name}=${filtered}"
+}
+
+section "Select Toolkit"
+echo "ASCEND_ROOT=${ASCEND_ROOT}"
+
+section "Override Env For selected toolkit"
 export ASCEND_HOME_PATH="${ASCEND_ROOT}"
 export ASCEND_TOOLKIT_HOME="${ASCEND_ROOT}"
 export ASCEND_OPP_PATH="${ASCEND_ROOT}/opp"
+
+strip_ascend_paths PATH
+strip_ascend_paths LD_LIBRARY_PATH
+strip_ascend_paths PYTHONPATH
 
 prepend_path PATH "${ASCEND_ROOT}/bin"
 prepend_path PATH "${ASCEND_ROOT}/compiler/ccec_compiler/bin"
