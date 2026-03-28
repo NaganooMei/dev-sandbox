@@ -32,6 +32,32 @@ prepend_path() {
     fi
 }
 
+strip_ascend_paths() {
+    local var_name="$1"
+    local old_value="${!var_name-}"
+    local filtered=""
+    local part
+
+    IFS=':' read -r -a parts <<< "$old_value"
+    for part in "${parts[@]}"; do
+        if [ -z "$part" ]; then
+            continue
+        fi
+        case "$part" in
+            /usr/local/Ascend/*)
+                continue
+                ;;
+        esac
+        if [ -n "$filtered" ]; then
+            filtered="${filtered}:$part"
+        else
+            filtered="$part"
+        fi
+    done
+
+    export "${var_name}=${filtered}"
+}
+
 need_file() {
     local path="$1"
     if [ ! -e "$path" ]; then
@@ -45,13 +71,13 @@ append_whitelist_entry_if_missing() {
     local marker="^name:aicpu_hccl_custom_p2p.tar.gz$"
 
     need_file "$file_path"
+
+    # Clean up the malformed line left by the earlier broken append path.
+    sed -i '/package_path:compatname:aicpu_hccl_custom_p2p.tar.gz/d' "$file_path"
+
     if grep -q "${marker}" "$file_path"; then
         echo "whitelist entry already exists in ${file_path}"
         return 0
-    fi
-
-    if grep -q "aicpu_hccl_custom_p2p.tar.gz" "$file_path"; then
-        echo "found an existing malformed custom_p2p whitelist entry in ${file_path}; appending a clean block"
     fi
 
     if [ -s "$file_path" ]; then
@@ -130,6 +156,10 @@ export CMAKE_PREFIX_PATH="${ASCEND_ROOT}/lib64/cmake"
 export ASC_DIR="${ASCEND_ROOT}/lib64/cmake"
 export AICPU_DIR="${ASCEND_ROOT}/lib64/cmake"
 
+strip_ascend_paths PATH
+strip_ascend_paths LD_LIBRARY_PATH
+strip_ascend_paths PYTHONPATH
+
 prepend_path PATH "${ASCEND_ROOT}/bin"
 prepend_path PATH "${ASCEND_ROOT}/compiler/ccec_compiler/bin"
 prepend_path PATH "${ASCEND_ROOT}/tools/ccec_compiler/bin"
@@ -184,8 +214,7 @@ append_whitelist_entry_if_missing "${ASCEND_CANN_CONF}"
 
 configure_npu_smi_if_needed
 
-section "Check custom_p2p installation"
-bash "${REPO_ROOT}/module/ascendgdrbw/check_hccl_custom_p2p_latest.sh"
-
-section "Run official custom_p2p example"
-bash "${REPO_ROOT}/module/ascendgdrbw/run_hccl_custom_p2p_example_latest.sh"
+section "Done"
+echo "custom_p2p package has been built and installed into ${ASCEND_ROOT}"
+echo "next step:"
+echo "  bash ${REPO_ROOT}/module/ascendgdrbw/run_hccl_custom_p2p_example_latest.sh"

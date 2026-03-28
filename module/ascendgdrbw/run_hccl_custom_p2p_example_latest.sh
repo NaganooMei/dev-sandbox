@@ -13,6 +13,8 @@ ASCEND_ROOT="$(bash "${REPO_ROOT}/module/ascendgdrbw/resolve_ascend_root.sh")"
 HCCL_REPO="$(bash "${REPO_ROOT}/module/ascendgdrbw/resolve_hccl_custom_p2p_source.sh")"
 EXAMPLE_DIR="${HCCL_REPO}/examples/04_custom_ops_p2p/testcase"
 CUSTOM_P2P_LIB_DIR="${ASCEND_ROOT}/opp/vendors/cust/lib64"
+TARGET_BIN="${EXAMPLE_DIR}/send_recv"
+FORCE_REBUILD="${FORCE_REBUILD:-0}"
 
 section() {
     echo
@@ -28,6 +30,32 @@ prepend_path() {
     else
         export "${var_name}=${new_value}"
     fi
+}
+
+strip_ascend_paths() {
+    local var_name="$1"
+    local old_value="${!var_name-}"
+    local filtered=""
+    local part
+
+    IFS=':' read -r -a parts <<< "$old_value"
+    for part in "${parts[@]}"; do
+        if [ -z "$part" ]; then
+            continue
+        fi
+        case "$part" in
+            /usr/local/Ascend/*)
+                continue
+                ;;
+        esac
+        if [ -n "$filtered" ]; then
+            filtered="${filtered}:$part"
+        else
+            filtered="$part"
+        fi
+    done
+
+    export "${var_name}=${filtered}"
 }
 
 need_file() {
@@ -46,6 +74,9 @@ section "Override Env For selected toolkit"
 export ASCEND_HOME_PATH="${ASCEND_ROOT}"
 export ASCEND_TOOLKIT_HOME="${ASCEND_ROOT}"
 export ASCEND_OPP_PATH="${ASCEND_ROOT}/opp"
+
+strip_ascend_paths PATH
+strip_ascend_paths LD_LIBRARY_PATH
 
 prepend_path PATH "${ASCEND_ROOT}/bin"
 prepend_path PATH "${ASCEND_ROOT}/compiler/ccec_compiler/bin"
@@ -68,9 +99,13 @@ need_file "${EXAMPLE_DIR}/Makefile"
 need_file "${ASCEND_ROOT}/opp/vendors/cust/include/hccl_custom_p2p.h"
 need_file "${CUSTOM_P2P_LIB_DIR}/libhccl_custom_p2p.so"
 
-section "Build Example"
-make -C "${EXAMPLE_DIR}" clean || true
-make -C "${EXAMPLE_DIR}"
+if [ ! -x "${TARGET_BIN}" ] || [ "${FORCE_REBUILD}" = "1" ]; then
+    section "Build Example"
+    make -C "${EXAMPLE_DIR}"
+else
+    section "Build Example"
+    echo "reuse existing binary: ${TARGET_BIN}"
+fi
 
 section "Run Example"
-make -C "${EXAMPLE_DIR}" test
+"${TARGET_BIN}"
