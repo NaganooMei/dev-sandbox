@@ -45,3 +45,5 @@
 .vscode/**
 .git/**
 **/build/**
+hccl/
+build-latest/
