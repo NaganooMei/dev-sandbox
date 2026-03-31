@@ -46,15 +46,20 @@ public:
     {
         NVBW_ASSERT(!srcBuffers.empty());
         NVBW_ASSERT(srcBuffers.size() == dstBuffers.size());
+        std::vector<int32_t> contextDevices(srcBuffers.size());
+        for (size_t i = 0; i < srcBuffers.size(); ++i) {
+            contextDevices[i] = memcpyInitiator_->ContextDevice(*srcBuffers[i], *dstBuffers[i]);
+        }
+
         std::vector<cudaStream_t> streams(srcBuffers.size());
         cudaEvent_t totalStart, totalEnd;
         std::vector<cudaEvent_t> endEvents(srcBuffers.size());
         /* allocate the per simulaneous copy resources */
-        NVBW_CUDA_ASSERT(cudaSetDevice(srcBuffers[0]->DeviceId()));
+        NVBW_CUDA_ASSERT(cudaSetDevice(contextDevices[0]));
         NVBW_CUDA_ASSERT(cudaEventCreate(&totalStart, cudaEventDefault));
         NVBW_CUDA_ASSERT(cudaEventCreate(&totalEnd, cudaEventDefault));
         for (size_t i = 0; i < srcBuffers.size(); i++) {
-            NVBW_CUDA_ASSERT(cudaSetDevice(srcBuffers[i]->DeviceId()));
+            NVBW_CUDA_ASSERT(cudaSetDevice(contextDevices[i]));
             NVBW_CUDA_ASSERT(cudaStreamCreateWithFlags(&streams[i], cudaStreamNonBlocking));
             NVBW_CUDA_ASSERT(cudaEventCreate(&endEvents[i], cudaEventDefault));
         }
@@ -63,23 +68,23 @@ public:
         durations.reserve(iterations_);
         for (size_t loop = 0; loop < warmup_ + iterations_; loop++) {
             /* ensure that all copies are launched at the same time */
-            NVBW_CUDA_ASSERT(cudaSetDevice(srcBuffers[0]->DeviceId()));
+            NVBW_CUDA_ASSERT(cudaSetDevice(contextDevices[0]));
             NVBW_CUDA_ASSERT(cudaEventRecord(totalStart, streams[0]));
             for (size_t i = 1; i < srcBuffers.size(); i++) {
-                NVBW_CUDA_ASSERT(cudaSetDevice(srcBuffers[i]->DeviceId()));
+                NVBW_CUDA_ASSERT(cudaSetDevice(contextDevices[i]));
                 NVBW_CUDA_ASSERT(cudaStreamWaitEvent(streams[i], totalStart));
             }
             /* submit copy task */
             for (size_t i = 0; i < srcBuffers.size(); i++) {
-                NVBW_CUDA_ASSERT(cudaSetDevice(srcBuffers[i]->DeviceId()));
+                NVBW_CUDA_ASSERT(cudaSetDevice(contextDevices[i]));
                 memcpyInitiator_->Copy(*srcBuffers[i], *dstBuffers[i], streams[i]);
                 NVBW_CUDA_ASSERT(cudaEventRecord(endEvents[i], streams[i]));
                 if (i != 0) {
-                    NVBW_CUDA_ASSERT(cudaSetDevice(srcBuffers[0]->DeviceId()));
+                    NVBW_CUDA_ASSERT(cudaSetDevice(contextDevices[0]));
                     NVBW_CUDA_ASSERT(cudaStreamWaitEvent(streams[0], endEvents[i]));
                 }
             }
-            NVBW_CUDA_ASSERT(cudaSetDevice(srcBuffers[0]->DeviceId()));
+            NVBW_CUDA_ASSERT(cudaSetDevice(contextDevices[0]));
             NVBW_CUDA_ASSERT(cudaEventRecord(totalEnd, streams[0]));
             NVBW_CUDA_ASSERT(cudaEventSynchronize(totalEnd));
             if (loop < warmup_) { continue; }
@@ -90,11 +95,11 @@ public:
         }
         /* release the per simulaneous copy resources */
         for (size_t i = 0; i < srcBuffers.size(); i++) {
-            NVBW_CUDA_ASSERT(cudaSetDevice(srcBuffers[i]->DeviceId()));
+            NVBW_CUDA_ASSERT(cudaSetDevice(contextDevices[i]));
             NVBW_CUDA_ASSERT(cudaEventDestroy(endEvents[i]));
             NVBW_CUDA_ASSERT(cudaStreamDestroy(streams[i]));
         }
-        NVBW_CUDA_ASSERT(cudaSetDevice(srcBuffers[0]->DeviceId()));
+        NVBW_CUDA_ASSERT(cudaSetDevice(contextDevices[0]));
         NVBW_CUDA_ASSERT(cudaEventDestroy(totalStart));
         NVBW_CUDA_ASSERT(cudaEventDestroy(totalEnd));
         /* organize the results then return */

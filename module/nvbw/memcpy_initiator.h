@@ -29,12 +29,19 @@
 class MemcpyInitiator {
 public:
     virtual ~MemcpyInitiator() = default;
+    virtual int32_t ContextDevice(const MemoryBuffer& src, const MemoryBuffer& dst) const = 0;
     virtual void Copy(const MemoryBuffer& src, const MemoryBuffer& dst,
                       cudaStream_t stream) const = 0;
 };
 
 class Host2DeviceCEMemcpyInitiator : public MemcpyInitiator {
 public:
+    int32_t ContextDevice(const MemoryBuffer& src, const MemoryBuffer& dst) const override
+    {
+        (void)src;
+        return dst.DeviceId();
+    }
+
     void Copy(const MemoryBuffer& src, const MemoryBuffer& dst, cudaStream_t stream) const override
     {
         NVBW_ASSERT(src.Size() == dst.Size());
@@ -48,6 +55,12 @@ public:
 
 class Device2HostCEMemcpyInitiator : public MemcpyInitiator {
 public:
+    int32_t ContextDevice(const MemoryBuffer& src, const MemoryBuffer& dst) const override
+    {
+        (void)dst;
+        return src.DeviceId();
+    }
+
     void Copy(const MemoryBuffer& src, const MemoryBuffer& dst, cudaStream_t stream) const override
     {
         NVBW_ASSERT(src.Size() == dst.Size());
