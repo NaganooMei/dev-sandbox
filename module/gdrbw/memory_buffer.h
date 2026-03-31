@@ -170,6 +170,7 @@ public:
     MmapSharedRegisteredBuffer(int32_t deviceId, size_t size, size_t number)
         : MemoryBuffer(deviceId, size, number)
     {
+        GDRBW_CUDA_ASSERT(cudaSetDevice(deviceId_));
         const auto totalSize = TotalBytes();
         const auto fd = shm_open("gdrbw_shared_buffer", O_CREAT | O_RDWR, 0666);
         GDRBW_ERRNO_ASSERT(fd != -1);
@@ -184,6 +185,7 @@ public:
     MmapSharedRegisteredBuffer(const char* shmName, int32_t deviceId, size_t size, size_t number)
         : MemoryBuffer(deviceId, size, number)
     {
+        GDRBW_CUDA_ASSERT(cudaSetDevice(deviceId_));
         const auto totalSize = TotalBytes();
         const auto fd = shm_open(shmName, O_CREAT | O_RDWR, 0666);
         GDRBW_ERRNO_ASSERT(fd != -1);
@@ -197,6 +199,7 @@ public:
     ~MmapSharedRegisteredBuffer() override
     {
         if (buffer_ != nullptr) {
+            (void)cudaSetDevice(deviceId_);
             (void)cudaHostUnregister(buffer_);
             munmap(buffer_, TotalBytes());
         }
@@ -212,6 +215,7 @@ public:
     PosixMemalignRegisteredBuffer(int32_t deviceId, size_t size, size_t number, size_t alignment)
         : MemoryBuffer(deviceId, size, number), alignment_(alignment)
     {
+        GDRBW_CUDA_ASSERT(cudaSetDevice(deviceId_));
         GDRBW_ASSERT(posix_memalign(&buffer_, alignment_, TotalBytes()) == 0);
         GDRBW_CUDA_ASSERT(cudaHostRegister(buffer_, TotalBytes(), cudaHostRegisterDefault));
     }
@@ -219,6 +223,7 @@ public:
     ~PosixMemalignRegisteredBuffer() override
     {
         if (buffer_ != nullptr) {
+            (void)cudaSetDevice(deviceId_);
             (void)cudaHostUnregister(buffer_);
             free(buffer_);
         }
@@ -235,6 +240,7 @@ public:
     CudaHostMemoryBuffer(int32_t deviceId, size_t size, size_t number)
         : MemoryBuffer(deviceId, size, number)
     {
+        GDRBW_CUDA_ASSERT(cudaSetDevice(deviceId_));
         GDRBW_CUDA_ASSERT(cudaMallocHost(&buffer_, TotalBytes()));
         RegisterHostMemoryForAllChannels();
     }
@@ -243,6 +249,7 @@ public:
     {
         ReleaseMemoryRegions();
         if (buffer_ != nullptr) {
+            (void)cudaSetDevice(deviceId_);
             (void)cudaFreeHost(buffer_);
         }
     }
