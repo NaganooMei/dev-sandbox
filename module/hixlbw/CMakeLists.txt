@@ -31,8 +31,13 @@ find_library(HIXL_LIB
     NAMES cann_hixl
     PATHS
         "${HIXL_BUILD_DIR}/src/llm_datadist"
+        "${HIXL_BUILD_DIR}/build/src/llm_datadist"
+        "${HIXL_BUILD_DIR}/src/hixl"
         "${HIXL_ROOT}/build/src/llm_datadist"
+        "${HIXL_ROOT}/build/src/hixl"
         "${HIXL_ROOT}/build_out/lib"
+        "${HIXL_ROOT}/build_out/lib64"
+        "${HIXL_ROOT}/build_out/hixl/lib"
     NO_DEFAULT_PATH
 )
 
@@ -61,7 +66,15 @@ find_library(ASCEND_HAL_LIB
     NO_DEFAULT_PATH
 )
 
-if(HIXL_INCLUDE_PATH AND HIXL_LIB AND ASCEND_RUNTIME_API_PATH AND ASCEND_RUNTIME_LIB AND ASCEND_HAL_LIB)
+message(STATUS "HIXL_ROOT=${HIXL_ROOT}")
+message(STATUS "HIXL_BUILD_DIR=${HIXL_BUILD_DIR}")
+message(STATUS "HIXL_INCLUDE_PATH=${HIXL_INCLUDE_PATH}")
+message(STATUS "HIXL_LIB=${HIXL_LIB}")
+message(STATUS "ASCEND_RUNTIME_API_PATH=${ASCEND_RUNTIME_API_PATH}")
+message(STATUS "ASCEND_RUNTIME_LIB=${ASCEND_RUNTIME_LIB}")
+message(STATUS "ASCEND_HAL_LIB=${ASCEND_HAL_LIB}")
+
+if(HIXL_INCLUDE_PATH AND HIXL_LIB AND ASCEND_RUNTIME_API_PATH AND ASCEND_RUNTIME_LIB)
     add_executable(hixlbw_h2d_async_compare
         h2d_async_compare.cc
     )
@@ -74,17 +87,22 @@ if(HIXL_INCLUDE_PATH AND HIXL_LIB AND ASCEND_RUNTIME_API_PATH AND ASCEND_RUNTIME
     target_link_libraries(hixlbw_h2d_async_compare PRIVATE
         "${HIXL_LIB}"
         "${ASCEND_RUNTIME_LIB}"
-        "${ASCEND_HAL_LIB}"
         pthread
         rt
     )
 
+    if(ASCEND_HAL_LIB)
+        target_link_libraries(hixlbw_h2d_async_compare PRIVATE "${ASCEND_HAL_LIB}")
+    endif()
+
     get_filename_component(HIXL_LIBRARY_DIR "${HIXL_LIB}" DIRECTORY)
     get_filename_component(ASCEND_LIBRARY_DIR "${ASCEND_RUNTIME_LIB}" DIRECTORY)
-    get_filename_component(ASCEND_HAL_LIBRARY_DIR "${ASCEND_HAL_LIB}" DIRECTORY)
-    set_target_properties(hixlbw_h2d_async_compare PROPERTIES
-        BUILD_RPATH "${HIXL_LIBRARY_DIR};${ASCEND_LIBRARY_DIR};${ASCEND_HAL_LIBRARY_DIR}"
-    )
+    set(HIXLBW_BUILD_RPATH "${HIXL_LIBRARY_DIR};${ASCEND_LIBRARY_DIR}")
+    if(ASCEND_HAL_LIB)
+        get_filename_component(ASCEND_HAL_LIBRARY_DIR "${ASCEND_HAL_LIB}" DIRECTORY)
+        set(HIXLBW_BUILD_RPATH "${HIXLBW_BUILD_RPATH};${ASCEND_HAL_LIBRARY_DIR}")
+    endif()
+    set_target_properties(hixlbw_h2d_async_compare PROPERTIES BUILD_RPATH "${HIXLBW_BUILD_RPATH}")
 else()
     message(STATUS "Skipping hixlbw_h2d_async_compare because HIXL/Ascend dependencies were not found.")
 endif()

@@ -9,6 +9,27 @@ HIXL_ROOT=${HIXL_ROOT:-"${ROOT_DIR}/hixl"}
 HIXL_BUILD_DIR=${HIXL_BUILD_DIR:-"${HIXL_ROOT}/build"}
 BUILD_DIR=${BUILD_DIR:-"${ROOT_DIR}/build-hixlbw"}
 
+find_hixl_lib() {
+    local candidates=(
+        "${HIXL_BUILD_DIR}/src/llm_datadist/libcann_hixl.so"
+        "${HIXL_BUILD_DIR}/build/src/llm_datadist/libcann_hixl.so"
+        "${HIXL_BUILD_DIR}/src/hixl/libcann_hixl.so"
+        "${HIXL_ROOT}/build/src/llm_datadist/libcann_hixl.so"
+        "${HIXL_ROOT}/build/src/hixl/libcann_hixl.so"
+        "${HIXL_ROOT}/build_out/lib/libcann_hixl.so"
+        "${HIXL_ROOT}/build_out/lib64/libcann_hixl.so"
+        "${HIXL_ROOT}/build_out/hixl/lib/libcann_hixl.so"
+    )
+    local candidate
+    for candidate in "${candidates[@]}"; do
+        if [[ -f "${candidate}" ]]; then
+            echo "${candidate}"
+            return 0
+        fi
+    done
+    return 1
+}
+
 source_ascend_env() {
     local candidates=(
         "/usr/local/Ascend/cann/set_env.sh"
@@ -41,13 +62,22 @@ if [[ ! -d "${HIXL_ROOT}" ]]; then
     exit 1
 fi
 
-if [[ ! -f "${HIXL_BUILD_DIR}/src/llm_datadist/libcann_hixl.so" ]]; then
+HIXL_LIB_PATH="$(find_hixl_lib || true)"
+if [[ -z "${HIXL_LIB_PATH}" ]]; then
     echo "building HIXL library first..." >&2
     (
         cd "${HIXL_ROOT}"
         bash build.sh --build-type=Release
     )
+    HIXL_LIB_PATH="$(find_hixl_lib || true)"
 fi
+
+if [[ -z "${HIXL_LIB_PATH}" ]]; then
+    echo "failed to locate libcann_hixl.so under HIXL_ROOT=${HIXL_ROOT} HIXL_BUILD_DIR=${HIXL_BUILD_DIR}" >&2
+    exit 1
+fi
+
+echo "using HIXL lib: ${HIXL_LIB_PATH}" >&2
 
 cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
