@@ -64,24 +64,39 @@ void LogInfo(const std::string &message)
     std::cerr << "[hixlbw] " << message << '\n';
 }
 
-void LogDeviceContext(const std::string &role, int requested_device)
+void LogRequestedDeviceContext(const std::string &role, int requested_device)
 {
-    uint32_t device_count = 0;
-    const aclError count_ret = aclrtGetDeviceCount(&device_count);
-
     std::ostringstream stream;
     stream << role << " requested_device=" << requested_device;
-    if (count_ret == ACL_ERROR_NONE) {
-        stream << " visible_device_count=" << device_count;
-    } else {
-        stream << " visible_device_count=<aclrtGetDeviceCount failed:" << static_cast<int>(count_ret) << '>';
-    }
-
     if (const char *visible = std::getenv("ASCEND_RT_VISIBLE_DEVICES"); visible != nullptr) {
         stream << " ASCEND_RT_VISIBLE_DEVICES=" << visible;
     }
     if (const char *device_id = std::getenv("ASCEND_DEVICE_ID"); device_id != nullptr) {
         stream << " ASCEND_DEVICE_ID=" << device_id;
+    }
+
+    LogInfo(stream.str());
+}
+
+void LogBoundDeviceContext(const std::string &role)
+{
+    int32_t current_device = -1;
+    const aclError device_ret = aclrtGetDevice(&current_device);
+
+    std::ostringstream stream;
+    stream << role;
+    if (device_ret == ACL_ERROR_NONE) {
+        stream << " current_device=" << current_device;
+    } else {
+        stream << " current_device=<aclrtGetDevice failed:" << static_cast<int>(device_ret) << '>';
+    }
+
+    aclrtRunMode run_mode = ACL_DEVICE;
+    const aclError run_mode_ret = aclrtGetRunMode(&run_mode);
+    if (run_mode_ret == ACL_ERROR_NONE) {
+        stream << " run_mode=" << static_cast<int>(run_mode);
+    } else {
+        stream << " run_mode=<aclrtGetRunMode failed:" << static_cast<int>(run_mode_ret) << '>';
     }
 
     LogInfo(stream.str());
@@ -657,8 +672,9 @@ std::vector<ResultRow> RunHixlClient(const Options &options)
         Fail("metadata total_bytes does not match client configuration");
     }
 
-    LogDeviceContext("client", options.device);
+    LogRequestedDeviceContext("client", options.device);
     CheckAcl(aclrtSetDevice(options.device), "aclrtSetDevice(client)");
+    LogBoundDeviceContext("client");
 
     HixlEngineGuard guard;
     std::map<hixl::AscendString, hixl::AscendString> init_options;
@@ -723,8 +739,9 @@ std::vector<ResultRow> RunHixlClient(const Options &options)
 
 int RunHixlServer(const Options &options)
 {
-    LogDeviceContext("server", options.device);
+    LogRequestedDeviceContext("server", options.device);
     CheckAcl(aclrtSetDevice(options.device), "aclrtSetDevice(server)");
+    LogBoundDeviceContext("server");
 
     HixlEngineGuard guard;
     std::map<hixl::AscendString, hixl::AscendString> init_options;
@@ -768,8 +785,9 @@ int RunHixlServer(const Options &options)
 
 std::vector<ResultRow> RunAclBaseline(const Options &options)
 {
-    LogDeviceContext("acl", options.device);
+    LogRequestedDeviceContext("acl", options.device);
     CheckAcl(aclrtSetDevice(options.device), "aclrtSetDevice(acl)");
+    LogBoundDeviceContext("acl");
 
     HostBuffer host_buffer(options.total_bytes);
     DeviceBuffer device_buffer(options.total_bytes);
