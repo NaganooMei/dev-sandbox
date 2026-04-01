@@ -89,6 +89,15 @@ if(HIXL_INCLUDE_PATH AND HIXL_LIB AND ASCEND_RUNTIME_API_PATH AND ASCEND_RUNTIME
     )
 
     target_compile_definitions(hixlbw_h2d_async_compare PRIVATE _GLIBCXX_USE_CXX11_ABI=0)
+    target_compile_options(hixlbw_h2d_async_compare PRIVATE
+        -ftrapv
+        -O2
+        -fno-common
+        -Wfloat-equal
+        -Wall
+        -Werror
+        -Wextra
+    )
     target_include_directories(hixlbw_h2d_async_compare PRIVATE
         "${HIXL_INCLUDE_PATH}"
         "${ASCEND_RUNTIME_API_PATH}"
@@ -104,16 +113,6 @@ if(HIXL_INCLUDE_PATH AND HIXL_LIB AND ASCEND_RUNTIME_API_PATH AND ASCEND_RUNTIME
     if(ASCEND_HAL_LIB)
         target_link_libraries(hixlbw_h2d_async_compare PRIVATE "${ASCEND_HAL_LIB}")
     endif()
-
-    get_filename_component(HIXL_LIBRARY_DIR "${HIXL_LIB}" DIRECTORY)
-    get_filename_component(ASCEND_LIBRARY_DIR "${ASCEND_RUNTIME_LIB}" DIRECTORY)
-    get_filename_component(METADEF_LIBRARY_DIR "${METADEF_LIB}" DIRECTORY)
-    set(HIXLBW_BUILD_RPATH "${HIXL_LIBRARY_DIR};${ASCEND_LIBRARY_DIR};${METADEF_LIBRARY_DIR}")
-    if(ASCEND_HAL_LIB)
-        get_filename_component(ASCEND_HAL_LIBRARY_DIR "${ASCEND_HAL_LIB}" DIRECTORY)
-        set(HIXLBW_BUILD_RPATH "${HIXLBW_BUILD_RPATH};${ASCEND_HAL_LIBRARY_DIR}")
-    endif()
-    set_target_properties(hixlbw_h2d_async_compare PROPERTIES BUILD_RPATH "${HIXLBW_BUILD_RPATH}")
 else()
     message(STATUS "Skipping hixlbw_h2d_async_compare because HIXL/Ascend dependencies were not found.")
 endif()

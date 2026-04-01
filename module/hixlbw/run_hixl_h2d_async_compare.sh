@@ -55,11 +55,38 @@ fi
 
 HIXL_ROOT=${HIXL_ROOT:-"${ROOT_DIR}/hixl"}
 HIXL_BUILD_DIR=${HIXL_BUILD_DIR:-"${HIXL_ROOT}/build"}
-HIXL_LIB_DIR="${HIXL_BUILD_DIR}/src/llm_datadist"
 
-export LD_LIBRARY_PATH="${HIXL_LIB_DIR}:${ASCEND_ROOT}/lib64:${ASCEND_ROOT}/runtime/lib64:${ASCEND_ROOT}/lib64/stub:${ASCEND_ROOT}/runtime/lib64/stub:${LD_LIBRARY_PATH:-}"
+find_hixl_lib() {
+    local candidates=(
+        "${HIXL_BUILD_DIR}/src/llm_datadist/libcann_hixl.so"
+        "${HIXL_BUILD_DIR}/build/src/llm_datadist/libcann_hixl.so"
+        "${HIXL_BUILD_DIR}/src/hixl/libcann_hixl.so"
+        "${HIXL_ROOT}/build/src/llm_datadist/libcann_hixl.so"
+        "${HIXL_ROOT}/build/src/hixl/libcann_hixl.so"
+        "${HIXL_ROOT}/build_out/lib/libcann_hixl.so"
+        "${HIXL_ROOT}/build_out/lib64/libcann_hixl.so"
+        "${HIXL_ROOT}/build_out/hixl/lib/libcann_hixl.so"
+    )
+    local candidate
+    for candidate in "${candidates[@]}"; do
+        if [[ -f "${candidate}" ]]; then
+            echo "${candidate}"
+            return 0
+        fi
+    done
+    return 1
+}
 
 bash "${BUILD_SCRIPT}"
+
+HIXL_LIB_PATH="$(find_hixl_lib || true)"
+if [[ -z "${HIXL_LIB_PATH}" ]]; then
+    echo "failed to locate libcann_hixl.so for runtime" >&2
+    exit 1
+fi
+HIXL_LIB_DIR="$(dirname "${HIXL_LIB_PATH}")"
+export LD_LIBRARY_PATH="${HIXL_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+echo "[hixlbw-run] HIXL_LIB_PATH=${HIXL_LIB_PATH}" >&2
 
 if [[ ! -x "${BIN_PATH}" ]]; then
     echo "binary not found: ${BIN_PATH}" >&2
