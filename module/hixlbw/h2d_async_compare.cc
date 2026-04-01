@@ -793,12 +793,8 @@ int main(int argc, char **argv)
     bool client_done_written = false;
     try {
         options = ParseOptions(argc, argv);
-        CheckAcl(aclInit(nullptr), "aclInit");
-
         if (options.role == "server") {
-            const auto ret = RunHixlServer(options);
-            CheckAcl(aclFinalize(), "aclFinalize");
-            return ret;
+            return RunHixlServer(options);
         }
 
         std::vector<ResultRow> rows;
@@ -815,8 +811,6 @@ int main(int argc, char **argv)
         for (const auto &row : rows) {
             PrintResultRow(row);
         }
-
-        CheckAcl(aclFinalize(), "aclFinalize");
         return 0;
     } catch (const std::exception &error) {
         if (options.role == "client" && !options.metadata_file.empty() && !client_done_written) {
