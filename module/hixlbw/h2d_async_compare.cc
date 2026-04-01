@@ -64,6 +64,29 @@ void LogInfo(const std::string &message)
     std::cerr << "[hixlbw] " << message << '\n';
 }
 
+void LogDeviceContext(const std::string &role, int requested_device)
+{
+    uint32_t device_count = 0;
+    const aclError count_ret = aclrtGetDeviceCount(&device_count);
+
+    std::ostringstream stream;
+    stream << role << " requested_device=" << requested_device;
+    if (count_ret == ACL_ERROR_NONE) {
+        stream << " visible_device_count=" << device_count;
+    } else {
+        stream << " visible_device_count=<aclrtGetDeviceCount failed:" << static_cast<int>(count_ret) << '>';
+    }
+
+    if (const char *visible = std::getenv("ASCEND_RT_VISIBLE_DEVICES"); visible != nullptr) {
+        stream << " ASCEND_RT_VISIBLE_DEVICES=" << visible;
+    }
+    if (const char *device_id = std::getenv("ASCEND_DEVICE_ID"); device_id != nullptr) {
+        stream << " ASCEND_DEVICE_ID=" << device_id;
+    }
+
+    LogInfo(stream.str());
+}
+
 bool FileExists(const std::string &path)
 {
     std::ifstream input(path);
@@ -634,6 +657,7 @@ std::vector<ResultRow> RunHixlClient(const Options &options)
         Fail("metadata total_bytes does not match client configuration");
     }
 
+    LogDeviceContext("client", options.device);
     CheckAcl(aclrtSetDevice(options.device), "aclrtSetDevice(client)");
 
     HixlEngineGuard guard;
@@ -699,6 +723,7 @@ std::vector<ResultRow> RunHixlClient(const Options &options)
 
 int RunHixlServer(const Options &options)
 {
+    LogDeviceContext("server", options.device);
     CheckAcl(aclrtSetDevice(options.device), "aclrtSetDevice(server)");
 
     HixlEngineGuard guard;
@@ -743,6 +768,7 @@ int RunHixlServer(const Options &options)
 
 std::vector<ResultRow> RunAclBaseline(const Options &options)
 {
+    LogDeviceContext("acl", options.device);
     CheckAcl(aclrtSetDevice(options.device), "aclrtSetDevice(acl)");
 
     HostBuffer host_buffer(options.total_bytes);
