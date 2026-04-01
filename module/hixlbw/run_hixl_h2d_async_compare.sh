@@ -8,6 +8,7 @@ ROOT_DIR=$(cd "${SCRIPT_DIR}/../.." && pwd)
 BUILD_SCRIPT=${BUILD_SCRIPT:-"${SCRIPT_DIR}/build_hixlbw.sh"}
 BUILD_DIR=${BUILD_DIR:-"${ROOT_DIR}/build-hixlbw"}
 BIN_PATH="${BUILD_DIR}/module/hixlbw/hixlbw_h2d_async_compare"
+SERVER_LOG="${BUILD_DIR}/hixlbw_server.log"
 
 CLIENT_DEVICE=${CLIENT_DEVICE:-0}
 SERVER_DEVICE=${SERVER_DEVICE:-1}
@@ -94,7 +95,7 @@ echo "[hixlbw-run] METADATA_FILE=${METADATA_FILE}" >&2
     --connect-timeout-ms "${CONNECT_TIMEOUT_MS}" \
     --completion-timeout-ms "${COMPLETION_TIMEOUT_MS}" \
     --metadata-timeout-ms "${METADATA_TIMEOUT_MS}" \
-    >"${BUILD_DIR}/hixlbw_server.log" 2>&1 &
+    >"${SERVER_LOG}" 2>&1 &
 SERVER_PID=$!
 echo "[hixlbw-run] server pid=${SERVER_PID}" >&2
 
@@ -104,8 +105,8 @@ for _ in $(seq 1 600); do
     fi
     if ! kill -0 "${SERVER_PID}" >/dev/null 2>&1; then
         echo "server exited before creating metadata file: ${METADATA_FILE}" >&2
-        if [[ -f "${BUILD_DIR}/hixlbw_server.log" ]]; then
-            cat "${BUILD_DIR}/hixlbw_server.log" >&2
+        if [[ -f "${SERVER_LOG}" ]]; then
+            cat "${SERVER_LOG}" >&2
         fi
         exit 1
     fi
@@ -114,13 +115,13 @@ done
 
 if [[ ! -f "${METADATA_FILE}" ]]; then
     echo "metadata file was not created: ${METADATA_FILE}" >&2
-    if [[ -f "${BUILD_DIR}/hixlbw_server.log" ]]; then
-        cat "${BUILD_DIR}/hixlbw_server.log" >&2
+    if [[ -f "${SERVER_LOG}" ]]; then
+        cat "${SERVER_LOG}" >&2
     fi
     exit 1
 fi
 
-"${BIN_PATH}" \
+if ! "${BIN_PATH}" \
     --role client \
     --device "${CLIENT_DEVICE}" \
     --local-engine "${CLIENT_ENGINE}" \
@@ -133,9 +134,19 @@ fi
     --connect-timeout-ms "${CONNECT_TIMEOUT_MS}" \
     --completion-timeout-ms "${COMPLETION_TIMEOUT_MS}" \
     --metadata-timeout-ms "${METADATA_TIMEOUT_MS}" \
-    --poll-interval-us "${POLL_INTERVAL_US}"
+    --poll-interval-us "${POLL_INTERVAL_US}"; then
+    if [[ -f "${SERVER_LOG}" ]]; then
+        cat "${SERVER_LOG}" >&2
+    fi
+    exit 1
+fi
 
-wait "${SERVER_PID}"
+if ! wait "${SERVER_PID}"; then
+    if [[ -f "${SERVER_LOG}" ]]; then
+        cat "${SERVER_LOG}" >&2
+    fi
+    exit 1
+fi
 SERVER_PID=
 
 "${BIN_PATH}" \

@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 #include "hixl/hixl.h"
@@ -62,6 +63,13 @@ void CheckHixl(hixl::Status code, const std::string &context)
 void LogInfo(const std::string &message)
 {
     std::cerr << "[hixlbw] " << message << '\n';
+}
+
+void LogStep(const std::string &role, const std::string &step)
+{
+    std::ostringstream stream;
+    stream << "pid=" << static_cast<long long>(::getpid()) << ' ' << role << ' ' << step;
+    LogInfo(stream.str());
 }
 
 void LogRequestedDeviceContext(const std::string &role, int requested_device)
@@ -203,7 +211,8 @@ struct Options {
 void LogRoleStart(const Options &options)
 {
     std::ostringstream stream;
-    stream << "role=" << options.role << " device=" << options.device;
+    stream << "pid=" << static_cast<long long>(::getpid()) << " role=" << options.role
+           << " device=" << options.device;
     if (!options.local_engine.empty()) {
         stream << " local_engine=" << options.local_engine;
     }
@@ -684,6 +693,7 @@ void VerifyBytes(const std::vector<std::uint8_t> &actual, const std::vector<std:
 
 std::vector<ResultRow> RunHixlClient(const Options &options)
 {
+    LogStep("client", "enter");
     LogInfo("client waiting for metadata file " + options.metadata_file);
     const auto metadata = WaitForMetadata(options.metadata_file, options.metadata_timeout_ms);
     if (metadata.total_bytes != options.total_bytes) {
@@ -699,21 +709,29 @@ std::vector<ResultRow> RunHixlClient(const Options &options)
     HixlEngineGuard guard;
     std::map<hixl::AscendString, hixl::AscendString> init_options;
     init_options[hixl::OPTION_BUFFER_POOL] = "0:0";
+    LogStep("client", "before Hixl::Initialize");
     CheckHixl(guard.engine.Initialize(options.local_engine.c_str(), init_options), "Hixl::Initialize(client)");
     guard.initialized = true;
+    LogStep("client", "after Hixl::Initialize");
 
+    LogStep("client", "before HostBuffer");
     HostBuffer host_buffer(options.total_bytes);
     FillPattern(static_cast<std::uint8_t *>(host_buffer.data), host_buffer.bytes);
+    LogStep("client", "after HostBuffer");
 
     hixl::MemDesc mem_desc{};
     mem_desc.addr = reinterpret_cast<std::uintptr_t>(host_buffer.data);
     mem_desc.len = static_cast<std::size_t>(host_buffer.bytes);
+    LogStep("client", "before Hixl::RegisterMem(host)");
     CheckHixl(guard.engine.RegisterMem(mem_desc, hixl::MEM_HOST, guard.mem_handle), "Hixl::RegisterMem(host)");
+    LogStep("client", "after Hixl::RegisterMem(host)");
 
     const auto remote_engine = metadata.remote_engine.empty() ? options.remote_engine : metadata.remote_engine;
     guard.remote_engine = remote_engine;
+    LogStep("client", "before Hixl::Connect");
     CheckHixl(guard.engine.Connect(remote_engine.c_str(), options.connect_timeout_ms), "Hixl::Connect");
     guard.connected = true;
+    LogStep("client", "after Hixl::Connect");
 
     std::vector<ResultRow> rows;
     const auto block_sizes = BuildBlockSizes(options);
@@ -759,18 +777,25 @@ std::vector<ResultRow> RunHixlClient(const Options &options)
 
 int RunHixlServer(const Options &options)
 {
+    LogStep("server", "enter");
     HixlEngineGuard guard;
     std::map<hixl::AscendString, hixl::AscendString> init_options;
     init_options[hixl::OPTION_BUFFER_POOL] = "0:0";
+    LogStep("server", "before Hixl::Initialize");
     CheckHixl(guard.engine.Initialize(options.local_engine.c_str(), init_options), "Hixl::Initialize(server)");
     guard.initialized = true;
+    LogStep("server", "after Hixl::Initialize");
 
+    LogStep("server", "before DeviceBuffer");
     DeviceBuffer device_buffer(options.total_bytes);
+    LogStep("server", "after DeviceBuffer");
     hixl::MemDesc mem_desc{};
     mem_desc.addr = reinterpret_cast<std::uintptr_t>(device_buffer.data);
     mem_desc.len = static_cast<std::size_t>(device_buffer.bytes);
+    LogStep("server", "before Hixl::RegisterMem(device)");
     CheckHixl(guard.engine.RegisterMem(mem_desc, hixl::MEM_DEVICE, guard.mem_handle),
               "Hixl::RegisterMem(device)");
+    LogStep("server", "after Hixl::RegisterMem(device)");
 
     Metadata metadata;
     metadata.remote_engine = options.local_engine;
@@ -778,6 +803,7 @@ int RunHixlServer(const Options &options)
     metadata.remote_addr = reinterpret_cast<std::uintptr_t>(device_buffer.data);
     metadata.total_bytes = options.total_bytes;
     metadata.ready = true;
+    LogStep("server", "before metadata write");
     WriteFileAtomic(options.metadata_file, SerializeMetadata(metadata));
     LogInfo("server metadata written to " + options.metadata_file);
 
@@ -801,6 +827,7 @@ int RunHixlServer(const Options &options)
 
 std::vector<ResultRow> RunAclBaseline(const Options &options)
 {
+    LogStep("acl", "enter");
     HostBuffer host_buffer(options.total_bytes);
     DeviceBuffer device_buffer(options.total_bytes);
     FillPattern(static_cast<std::uint8_t *>(host_buffer.data), host_buffer.bytes);
