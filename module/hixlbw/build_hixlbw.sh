@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "${SCRIPT_DIR}/../.." && pwd)
+STANDALONE_DIR="${SCRIPT_DIR}/standalone"
 
 HIXL_ROOT=${HIXL_ROOT:-"${ROOT_DIR}/hixl"}
 HIXL_BUILD_DIR=${HIXL_BUILD_DIR:-"${HIXL_ROOT}/build"}
@@ -79,7 +80,7 @@ fi
 
 echo "using HIXL lib: ${HIXL_LIB_PATH}" >&2
 
-cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" \
+cmake -S "${STANDALONE_DIR}" -B "${BUILD_DIR}" \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DASCEND_ROOT="${ASCEND_ROOT}" \
     -DHIXL_ROOT="${HIXL_ROOT}" \
@@ -93,4 +94,4 @@ fi
 
 cmake --build "${BUILD_DIR}" --target hixlbw_h2d_async_compare -j"${JOBS}"
 
-echo "binary: ${BUILD_DIR}/module/hixlbw/hixlbw_h2d_async_compare"
+echo "binary: ${BUILD_DIR}/hixlbw_h2d_async_compare"

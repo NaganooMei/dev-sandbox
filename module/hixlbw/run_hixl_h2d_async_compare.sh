@@ -7,7 +7,7 @@ ROOT_DIR=$(cd "${SCRIPT_DIR}/../.." && pwd)
 
 BUILD_SCRIPT=${BUILD_SCRIPT:-"${SCRIPT_DIR}/build_hixlbw.sh"}
 BUILD_DIR=${BUILD_DIR:-"${ROOT_DIR}/build-hixlbw"}
-BIN_PATH="${BUILD_DIR}/module/hixlbw/hixlbw_h2d_async_compare"
+BIN_PATH="${BUILD_DIR}/hixlbw_h2d_async_compare"
 SERVER_LOG="${BUILD_DIR}/hixlbw_server.log"
 
 CLIENT_DEVICE=${CLIENT_DEVICE:-0}
