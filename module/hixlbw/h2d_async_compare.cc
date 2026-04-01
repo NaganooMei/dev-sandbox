@@ -200,6 +200,23 @@ struct Options {
     bool print_header = false;
 };
 
+void LogRoleStart(const Options &options)
+{
+    std::ostringstream stream;
+    stream << "role=" << options.role << " device=" << options.device;
+    if (!options.local_engine.empty()) {
+        stream << " local_engine=" << options.local_engine;
+    }
+    if (!options.remote_engine.empty()) {
+        stream << " remote_engine=" << options.remote_engine;
+    }
+    if (!options.metadata_file.empty()) {
+        stream << " metadata_file=" << options.metadata_file;
+    }
+    stream << " total_bytes=" << options.total_bytes << " repeats=" << options.repeats;
+    LogInfo(stream.str());
+}
+
 struct Metadata {
     std::string remote_engine;
     int device_id = -1;
@@ -667,14 +684,17 @@ void VerifyBytes(const std::vector<std::uint8_t> &actual, const std::vector<std:
 
 std::vector<ResultRow> RunHixlClient(const Options &options)
 {
+    LogInfo("client waiting for metadata file " + options.metadata_file);
     const auto metadata = WaitForMetadata(options.metadata_file, options.metadata_timeout_ms);
     if (metadata.total_bytes != options.total_bytes) {
         Fail("metadata total_bytes does not match client configuration");
     }
-
-    LogRequestedDeviceContext("client", options.device);
-    CheckAcl(aclrtSetDevice(options.device), "aclrtSetDevice(client)");
-    LogBoundDeviceContext("client");
+    LogInfo("client metadata ready remote_engine=" + metadata.remote_engine +
+            " remote_addr=0x" + [&metadata]() {
+                std::ostringstream stream;
+                stream << std::hex << metadata.remote_addr;
+                return stream.str();
+            }());
 
     HixlEngineGuard guard;
     std::map<hixl::AscendString, hixl::AscendString> init_options;
@@ -739,10 +759,6 @@ std::vector<ResultRow> RunHixlClient(const Options &options)
 
 int RunHixlServer(const Options &options)
 {
-    LogRequestedDeviceContext("server", options.device);
-    CheckAcl(aclrtSetDevice(options.device), "aclrtSetDevice(server)");
-    LogBoundDeviceContext("server");
-
     HixlEngineGuard guard;
     std::map<hixl::AscendString, hixl::AscendString> init_options;
     init_options[hixl::OPTION_BUFFER_POOL] = "0:0";
@@ -785,10 +801,6 @@ int RunHixlServer(const Options &options)
 
 std::vector<ResultRow> RunAclBaseline(const Options &options)
 {
-    LogRequestedDeviceContext("acl", options.device);
-    CheckAcl(aclrtSetDevice(options.device), "aclrtSetDevice(acl)");
-    LogBoundDeviceContext("acl");
-
     HostBuffer host_buffer(options.total_bytes);
     DeviceBuffer device_buffer(options.total_bytes);
     FillPattern(static_cast<std::uint8_t *>(host_buffer.data), host_buffer.bytes);
@@ -835,10 +847,20 @@ int main(int argc, char **argv)
 {
     Options options;
     bool client_done_written = false;
+    bool device_bound = false;
     try {
         options = ParseOptions(argc, argv);
+        LogRoleStart(options);
+        LogRequestedDeviceContext(options.role, options.device);
+        CheckAcl(aclrtSetDevice(options.device), "aclrtSetDevice(main)");
+        device_bound = true;
+        LogBoundDeviceContext(options.role);
+
         if (options.role == "server") {
-            return RunHixlServer(options);
+            const int ret = RunHixlServer(options);
+            CheckAcl(aclrtResetDevice(options.device), "aclrtResetDevice(server)");
+            device_bound = false;
+            return ret;
         }
 
         std::vector<ResultRow> rows;
@@ -855,6 +877,8 @@ int main(int argc, char **argv)
         for (const auto &row : rows) {
             PrintResultRow(row);
         }
+        CheckAcl(aclrtResetDevice(options.device), "aclrtResetDevice(main)");
+        device_bound = false;
         return 0;
     } catch (const std::exception &error) {
         if (options.role == "client" && !options.metadata_file.empty() && !client_done_written) {
@@ -862,6 +886,9 @@ int main(int argc, char **argv)
                 WriteDoneSignal(options.metadata_file, false, error.what());
             } catch (...) {
             }
+        }
+        if (device_bound) {
+            (void)aclrtResetDevice(options.device);
         }
         std::cerr << "[hixlbw][error] " << error.what() << '\n';
         return 1;

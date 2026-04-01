@@ -11,7 +11,7 @@ BIN_PATH="${BUILD_DIR}/module/hixlbw/hixlbw_h2d_async_compare"
 
 CLIENT_DEVICE=${CLIENT_DEVICE:-0}
 SERVER_DEVICE=${SERVER_DEVICE:-1}
-CLIENT_ENGINE=${CLIENT_ENGINE:-127.0.0.1:16000}
+CLIENT_ENGINE=${CLIENT_ENGINE:-127.0.0.1}
 SERVER_ENGINE=${SERVER_ENGINE:-127.0.0.1:16001}
 METADATA_FILE=${METADATA_FILE:-"${BUILD_DIR}/hixlbw_metadata.txt"}
 
@@ -78,6 +78,9 @@ cleanup() {
 trap cleanup EXIT
 
 echo "path,total_bytes,block_bytes,transfer_count,repeats,submit_us_avg,total_us_avg,bandwidth_gib_s,poll_count_avg"
+echo "[hixlbw-run] CLIENT_DEVICE=${CLIENT_DEVICE} SERVER_DEVICE=${SERVER_DEVICE}" >&2
+echo "[hixlbw-run] CLIENT_ENGINE=${CLIENT_ENGINE} SERVER_ENGINE=${SERVER_ENGINE}" >&2
+echo "[hixlbw-run] METADATA_FILE=${METADATA_FILE}" >&2
 
 "${BIN_PATH}" \
     --role server \
@@ -93,10 +96,18 @@ echo "path,total_bytes,block_bytes,transfer_count,repeats,submit_us_avg,total_us
     --metadata-timeout-ms "${METADATA_TIMEOUT_MS}" \
     >"${BUILD_DIR}/hixlbw_server.log" 2>&1 &
 SERVER_PID=$!
+echo "[hixlbw-run] server pid=${SERVER_PID}" >&2
 
 for _ in $(seq 1 600); do
     if [[ -f "${METADATA_FILE}" ]]; then
         break
+    fi
+    if ! kill -0 "${SERVER_PID}" >/dev/null 2>&1; then
+        echo "server exited before creating metadata file: ${METADATA_FILE}" >&2
+        if [[ -f "${BUILD_DIR}/hixlbw_server.log" ]]; then
+            cat "${BUILD_DIR}/hixlbw_server.log" >&2
+        fi
+        exit 1
     fi
     sleep 0.1
 done
