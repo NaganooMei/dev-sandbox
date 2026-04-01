@@ -86,27 +86,10 @@ void LogRequestedDeviceContext(const std::string &role, int requested_device)
     LogInfo(stream.str());
 }
 
-void LogBoundDeviceContext(const std::string &role)
+void LogSetDeviceSuccess(const std::string &role, int requested_device)
 {
-    int32_t current_device = -1;
-    const aclError device_ret = aclrtGetDevice(&current_device);
-
     std::ostringstream stream;
-    stream << role;
-    if (device_ret == ACL_ERROR_NONE) {
-        stream << " current_device=" << current_device;
-    } else {
-        stream << " current_device=<aclrtGetDevice failed:" << static_cast<int>(device_ret) << '>';
-    }
-
-    aclrtRunMode run_mode = ACL_DEVICE;
-    const aclError run_mode_ret = aclrtGetRunMode(&run_mode);
-    if (run_mode_ret == ACL_ERROR_NONE) {
-        stream << " run_mode=" << static_cast<int>(run_mode);
-    } else {
-        stream << " run_mode=<aclrtGetRunMode failed:" << static_cast<int>(run_mode_ret) << '>';
-    }
-
+    stream << role << " aclrtSetDevice success device=" << requested_device;
     LogInfo(stream.str());
 }
 
@@ -879,9 +862,10 @@ int main(int argc, char **argv)
         options = ParseOptions(argc, argv);
         LogRoleStart(options);
         LogRequestedDeviceContext(options.role, options.device);
+        LogStep(options.role, "before aclrtSetDevice");
         CheckAcl(aclrtSetDevice(options.device), "aclrtSetDevice(main)");
         device_bound = true;
-        LogBoundDeviceContext(options.role);
+        LogSetDeviceSuccess(options.role, options.device);
 
         if (options.role == "server") {
             const int ret = RunHixlServer(options);
