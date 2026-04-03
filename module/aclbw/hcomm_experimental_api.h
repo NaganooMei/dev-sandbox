@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include <hccl/hccl_comm.h>
+#include <hccl/hccl_res.h>
 #include <hccl/hccl_types.h>
 #include <hccl/hcomm_primitives.h>
 
