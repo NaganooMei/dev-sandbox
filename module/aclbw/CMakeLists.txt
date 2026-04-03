@@ -13,7 +13,7 @@ if (ASCEND_RUNTIME_API_PATH AND ASCEND_RUNTIME_LIB)
         AND EXISTS "${ASCEND_RUNTIME_API_PATH}/hccl/hccl_comm.h"
         AND EXISTS "${ASCEND_RUNTIME_API_PATH}/hccl/hccl_res.h"
         AND EXISTS "${ASCEND_RUNTIME_API_PATH}/hccl/hcomm_primitives.h"
-        AND EXISTS "${ASCEND_RUNTIME_API_PATH}/hccl.h")
+        AND EXISTS "${ASCEND_RUNTIME_API_PATH}/hccl/hccl.h")
         target_compile_definitions(aclbw PRIVATE ACLBW_ENABLE_HCOMM_EXPERIMENT)
         target_link_libraries(aclbw PRIVATE ${ASCEND_HCCL_LIB})
         if (ASCEND_HCOMM_LIB)
