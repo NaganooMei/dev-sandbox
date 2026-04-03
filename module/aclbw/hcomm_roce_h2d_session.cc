@@ -21,10 +21,12 @@
 namespace {
 constexpr const char* kIntraRoceEnableEnv = "HCCL_INTRA_ROCE_ENABLE";
 
+#ifdef ACLBW_ENABLE_HCOMM_EXPERIMENT
 std::string FormatFailure(const std::string& stage, int32_t code)
 {
     return fmt::format("{} failed, ret={}", stage, code);
 }
+#endif
 }  // namespace
 
 struct HcommRoceH2dSession::Impl {
