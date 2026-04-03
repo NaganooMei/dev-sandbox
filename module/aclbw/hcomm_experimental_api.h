@@ -9,6 +9,10 @@
 #include <hccl/hccl_types.h>
 #include <hccl/hcomm_primitives.h>
 
+#ifndef ACLBW_HCOMM_WEAK_SYMBOL
+#define ACLBW_HCOMM_WEAK_SYMBOL __attribute__((weak))
+#endif
+
 extern "C" {
 
 typedef enum {
@@ -99,22 +103,29 @@ typedef struct {
     };
 } AclbwHcommChannelDesc;
 
-HcclResult HcommEndPointGet(int32_t deviceId, AclbwEndPoint **endPointList, uint32_t *listNum);
-HcclResult HcommEndPointCreate(const AclbwEndPoint *endPoint, AclbwEndPointHandle *endPointHandle);
-HcclResult HcommEndPointDestroy(AclbwEndPointHandle endPointHandle);
-HcclResult HcommMemReg(AclbwEndPointHandle endPointHandle, AclbwHcclMem mem, void **memHandle);
-HcclResult HcommMemUnReg(AclbwEndPointHandle endPointHandle, void *memHandle);
-HcclResult HcommMemExport(AclbwEndPointHandle endPointHandle, const void *memHandle, void **memDesc,
-                          uint32_t *memDescLen);
-HcclResult HcommMemImport(AclbwEndPointHandle endPointHandle, const void *memDesc, uint32_t descLen,
-                          AclbwHcommBuf *outBuf);
-HcclResult HcommMemClose(AclbwEndPointHandle endPointHandle, const AclbwHcommBuf *buf);
+HcclResult HcommEndPointGet(int32_t deviceId, AclbwEndPoint **endPointList,
+                            uint32_t *listNum) ACLBW_HCOMM_WEAK_SYMBOL;
+HcclResult HcommEndPointCreate(const AclbwEndPoint *endPoint,
+                               AclbwEndPointHandle *endPointHandle) ACLBW_HCOMM_WEAK_SYMBOL;
+HcclResult HcommEndPointDestroy(AclbwEndPointHandle endPointHandle) ACLBW_HCOMM_WEAK_SYMBOL;
+HcclResult HcommMemReg(AclbwEndPointHandle endPointHandle, AclbwHcclMem mem,
+                       void **memHandle) ACLBW_HCOMM_WEAK_SYMBOL;
+HcclResult HcommMemUnReg(AclbwEndPointHandle endPointHandle,
+                         void *memHandle) ACLBW_HCOMM_WEAK_SYMBOL;
+HcclResult HcommMemExport(AclbwEndPointHandle endPointHandle, const void *memHandle,
+                          void **memDesc, uint32_t *memDescLen) ACLBW_HCOMM_WEAK_SYMBOL;
+HcclResult HcommMemImport(AclbwEndPointHandle endPointHandle, const void *memDesc,
+                          uint32_t descLen, AclbwHcommBuf *outBuf) ACLBW_HCOMM_WEAK_SYMBOL;
+HcclResult HcommMemClose(AclbwEndPointHandle endPointHandle,
+                         const AclbwHcommBuf *buf) ACLBW_HCOMM_WEAK_SYMBOL;
 HcclResult HcommChannelCreate(AclbwEndPointHandle *endPointHandle, AclbwCommEngine engine,
                               AclbwHcommChannelDesc *channelDescList, uint32_t listNum,
                               const void **memHandleList, uint32_t memHandleListNum,
-                              ChannelHandle *channelList);
-HcclResult HcommChannelDestroy(const ChannelHandle *channelList, uint32_t listNum);
-HcclResult HcommChannelFenceOnThread(ThreadHandle thread, ChannelHandle channel);
+                              ChannelHandle *channelList) ACLBW_HCOMM_WEAK_SYMBOL;
+HcclResult HcommChannelDestroy(const ChannelHandle *channelList,
+                               uint32_t listNum) ACLBW_HCOMM_WEAK_SYMBOL;
+HcclResult HcommChannelFenceOnThread(ThreadHandle thread,
+                                     ChannelHandle channel) ACLBW_HCOMM_WEAK_SYMBOL;
 
 }  // extern "C"
 

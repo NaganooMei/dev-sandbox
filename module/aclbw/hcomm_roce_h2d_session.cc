@@ -74,6 +74,16 @@ std::string EndPointToString(const AclbwEndPoint& endpoint)
     return fmt::format("protocol={}, addr={}", CommProtocolToString(endpoint.protocol),
                        CommAddrToString(endpoint.commAddr));
 }
+
+bool IsEndpointStackAvailable()
+{
+    return (&HcommEndPointGet != nullptr) && (&HcommEndPointCreate != nullptr) &&
+           (&HcommEndPointDestroy != nullptr) && (&HcommMemReg != nullptr) &&
+           (&HcommMemUnReg != nullptr) && (&HcommMemExport != nullptr) &&
+           (&HcommMemImport != nullptr) && (&HcommMemClose != nullptr) &&
+           (&HcommChannelCreate != nullptr) && (&HcommChannelDestroy != nullptr) &&
+           (&HcommChannelFenceOnThread != nullptr);
+}
 #endif
 }  // namespace
 
@@ -121,6 +131,10 @@ HcommRoceH2dSession::HcommRoceH2dSession(int32_t deviceId, void* hostBase, void*
     }
     if (impl_->hostBase == nullptr || impl_->deviceBase == nullptr || impl_->totalSize == 0) {
         impl_->error = "invalid host/device buffer arguments";
+        return;
+    }
+    if (!IsEndpointStackAvailable()) {
+        impl_->error = "required HCOMM endpoint/channel symbols are unavailable in installed libraries";
         return;
     }
 
@@ -276,22 +290,22 @@ HcommRoceH2dSession::~HcommRoceH2dSession()
     if (!impl_) {
         return;
     }
-    if (impl_->channel != 0) {
+    if (&HcommChannelDestroy != nullptr && impl_->channel != 0) {
         (void)HcommChannelDestroy(&impl_->channel, 1);
     }
-    if (impl_->importedRemoteBufferReady) {
+    if (&HcommMemClose != nullptr && impl_->importedRemoteBufferReady) {
         (void)HcommMemClose(impl_->localEndpointHandle, &impl_->importedRemoteBuffer);
     }
-    if (impl_->hostMemHandle != nullptr) {
+    if (&HcommMemUnReg != nullptr && impl_->hostMemHandle != nullptr) {
         (void)HcommMemUnReg(impl_->localEndpointHandle, impl_->hostMemHandle);
     }
-    if (impl_->deviceMemHandle != nullptr) {
+    if (&HcommMemUnReg != nullptr && impl_->deviceMemHandle != nullptr) {
         (void)HcommMemUnReg(impl_->remoteEndpointHandle, impl_->deviceMemHandle);
     }
-    if (impl_->localEndpointHandle != nullptr) {
+    if (&HcommEndPointDestroy != nullptr && impl_->localEndpointHandle != nullptr) {
         (void)HcommEndPointDestroy(impl_->localEndpointHandle);
     }
-    if (impl_->remoteEndpointHandle != nullptr) {
+    if (&HcommEndPointDestroy != nullptr && impl_->remoteEndpointHandle != nullptr) {
         (void)HcommEndPointDestroy(impl_->remoteEndpointHandle);
     }
     if (impl_->exportedDeviceMemDesc != nullptr) {
@@ -358,6 +372,9 @@ void HcommRoceH2dSession::Fence() const
 #ifdef ACLBW_ENABLE_HCOMM_EXPERIMENT
     if (!IsReady()) {
         throw std::runtime_error(ErrorMessage());
+    }
+    if (&HcommChannelFenceOnThread == nullptr) {
+        throw std::runtime_error("HcommChannelFenceOnThread symbol is unavailable");
     }
     const auto ret = HcommChannelFenceOnThread(impl_->thread, impl_->channel);
     if (ret != HCCL_SUCCESS) {
