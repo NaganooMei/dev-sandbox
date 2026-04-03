@@ -24,12 +24,14 @@
 #ifndef ACLBW_MEMCPY_INITIATOR_H
 #define ACLBW_MEMCPY_INITIATOR_H
 
+#include "hcomm_roce_h2d_session.h"
 #include "memory_buffer.h"
 
 class MemcpyInitiator {
 public:
     virtual ~MemcpyInitiator() = default;
     virtual void Copy(void* src, void* dst, size_t size, aclrtStream stream) const = 0;
+    virtual void FinalizeIteration(aclrtStream stream) const { (void)stream; }
     virtual void Copy(const MemoryBuffer& src, const MemoryBuffer& dst, aclrtStream stream) const
     {
         for (size_t i = 0; i < src.Number(); ++i) { Copy(src[i], dst[i], src.Size(), stream); }
@@ -52,6 +54,29 @@ public:
         ACLBW_ASCEND_ASSERT(
             aclrtMemcpyAsync(dst, size, src, size, ACL_MEMCPY_DEVICE_TO_HOST, stream));
     }
+};
+
+class Host2DeviceHcommRoceMemcpyInitiator : public MemcpyInitiator {
+public:
+    explicit Host2DeviceHcommRoceMemcpyInitiator(const HcommRoceH2dSession& session)
+        : session_(session)
+    {
+    }
+
+    void Copy(void* src, void* dst, size_t size, aclrtStream stream) const override
+    {
+        (void)stream;
+        session_.Write(src, dst, size);
+    }
+
+    void FinalizeIteration(aclrtStream stream) const override
+    {
+        (void)stream;
+        session_.Fence();
+    }
+
+private:
+    const HcommRoceH2dSession& session_;
 };
 
 #endif  // ACLBW_MEMCPY_INITIATOR_H

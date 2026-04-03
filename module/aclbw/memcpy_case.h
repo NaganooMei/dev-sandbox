@@ -24,6 +24,13 @@
 #ifndef ACLBW_MEMCPY_CASE_H
 #define ACLBW_MEMCPY_CASE_H
 
+#include <cstdint>
+#include <cstring>
+#include <exception>
+#include <string>
+#include <vector>
+#include <fmt/format.h>
+
 #include "memcpy_instance.h"
 #include "memcpy_result.h"
 
@@ -58,6 +65,40 @@ public:
     virtual void Run() = 0;
     const std::string& Key() const noexcept { return key_; }
 };
+
+inline void FillHostBufferPattern(const MemoryBuffer& buffer)
+{
+    auto* bytes = static_cast<uint8_t*>(buffer.Buffer());
+    const auto totalSize = buffer.Size() * buffer.Number();
+    for (size_t i = 0; i < totalSize; ++i) {
+        bytes[i] = static_cast<uint8_t>((i * 17U + 31U) & 0xFFU);
+    }
+}
+
+inline bool ValidateHostToDeviceCopy(const MemoryBuffer& srcBuffer, const MemoryBuffer& dstBuffer,
+                                     std::string& error)
+{
+    ACLBW_ASCEND_ASSERT(aclrtSetDevice(dstBuffer.DeviceId()));
+    void* hostMirror = nullptr;
+    const auto totalSize = dstBuffer.Size() * dstBuffer.Number();
+    ACLBW_ASCEND_ASSERT(aclrtMallocHost(&hostMirror, totalSize));
+    auto freeMirror = [&hostMirror]() {
+        if (hostMirror != nullptr) {
+            ACLBW_ASCEND_ASSERT(aclrtFreeHost(hostMirror));
+            hostMirror = nullptr;
+        }
+    };
+
+    ACLBW_ASCEND_ASSERT(
+        aclrtMemcpy(hostMirror, totalSize, dstBuffer.Buffer(), totalSize, ACL_MEMCPY_DEVICE_TO_HOST));
+    const auto cmp = std::memcmp(srcBuffer.Buffer(), hostMirror, totalSize);
+    freeMirror();
+    if (cmp != 0) {
+        error = fmt::format("device payload mismatch for {} bytes", totalSize);
+        return false;
+    }
+    return true;
+}
 
 class HostToDeviceMemcpyCase : public MemcpyCase {
 public:
@@ -146,6 +187,62 @@ public:
         for (auto& buffer : srcBuffers) { delete buffer; }
         for (auto& buffer : dstBuffers) { delete buffer; }
         shm_unlink(shmName);
+    }
+};
+
+class HostToDeviceHcommRoceSingleWriteCase : public MemcpyCase {
+public:
+    HostToDeviceHcommRoceSingleWriteCase()
+        : MemcpyCase("host_to_device_hcomm_roce_single_write")
+    {
+    }
+
+    void Run() override
+    {
+        auto& param = MemcpyParameterSet::Instance();
+        if (param.deviceNumber != 1) {
+            fmt::print("[aclbw][hcomm] {} unsupported: deviceNumber must be 1, got {}\n", Key(),
+                       param.deviceNumber);
+            return;
+        }
+        if (param.streamNumber != 1) {
+            fmt::print("[aclbw][hcomm] {} unsupported: streamNumber must be 1, got {}\n", Key(),
+                       param.streamNumber);
+            return;
+        }
+
+        MemcpyResult result;
+        for (auto deviceId = 0; deviceId < param.deviceNumber; deviceId++) {
+            AscendHostMemoryBuffer srcBuffer{deviceId, param.bufferSize, param.bufferNumber};
+            AscendDeviceMemoryBuffer dstBuffer{deviceId, param.bufferSize, param.bufferNumber};
+            FillHostBufferPattern(srcBuffer);
+
+            HcommRoceH2dSession session{
+                deviceId, srcBuffer.Buffer(), dstBuffer.Buffer(),
+                srcBuffer.Size() * srcBuffer.Number()};
+            if (!session.IsReady()) {
+                fmt::print("[aclbw][hcomm] {} unsupported: {}\n", Key(), session.ErrorMessage());
+                return;
+            }
+            session.PrintSummary();
+
+            Host2DeviceHcommRoceMemcpyInitiator initiator{session};
+            MemcpyInstance memcpyInstance{param.iterations, param.warmup, param.streamNumber,
+                                          &initiator};
+            try {
+                result.Record(memcpyInstance.DoMemcpy(srcBuffer, dstBuffer));
+            } catch (const std::exception& ex) {
+                fmt::print("[aclbw][hcomm] {} bring-up failed: {}\n", Key(), ex.what());
+                return;
+            }
+
+            std::string validateError;
+            if (!ValidateHostToDeviceCopy(srcBuffer, dstBuffer, validateError)) {
+                fmt::print("[aclbw][hcomm] {} validation failed: {}\n", Key(), validateError);
+                return;
+            }
+        }
+        result.Show("memcpy HCOMM ROCE CPU -> GPU(row) bandwidth");
     }
 };
 

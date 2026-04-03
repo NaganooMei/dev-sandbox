@@ -39,6 +39,7 @@ int main(int argc, char const* argv[])
         new AllHostToAllDeviceMemcpyCase(),
         new MmapToDeviceMemcpyCase(),
         new MmapToAllDeviceMemcpyCase(),
+        new HostToDeviceHcommRoceSingleWriteCase(),
     };
 
     for (auto& test : testcases) {

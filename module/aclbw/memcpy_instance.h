@@ -86,33 +86,42 @@ class MemcpyInstance {
                                 const std::vector<MemcpyStreamContext>& contexts)
     {
         const auto number = contexts.size();
-        aclrtEvent totalStart, totalEnd;
+        aclrtEvent totalStart = nullptr;
+        aclrtEvent totalEnd = nullptr;
         ACLBW_ASCEND_ASSERT(aclrtSetDevice(contexts[0].deviceId));
         ACLBW_ASCEND_ASSERT(aclrtCreateEvent(&totalStart));
         ACLBW_ASCEND_ASSERT(aclrtCreateEvent(&totalEnd));
-        ACLBW_ASCEND_ASSERT(aclrtRecordEvent(totalStart, contexts[0].stream));
-        for (size_t i = 0; i < number; i++) {
-            ACLBW_ASCEND_ASSERT(aclrtSetDevice(contexts[i].deviceId));
-            if (i != 0) {
-                ACLBW_ASCEND_ASSERT(aclrtStreamWaitEvent(contexts[i].stream, totalStart));
+        try {
+            ACLBW_ASCEND_ASSERT(aclrtRecordEvent(totalStart, contexts[0].stream));
+            for (size_t i = 0; i < number; i++) {
+                ACLBW_ASCEND_ASSERT(aclrtSetDevice(contexts[i].deviceId));
+                if (i != 0) {
+                    ACLBW_ASCEND_ASSERT(aclrtStreamWaitEvent(contexts[i].stream, totalStart));
+                }
+                for (const auto& io : contexts[i].ioArray) {
+                    initiator.Copy(io.src, io.dst, io.size, contexts[i].stream);
+                }
+                initiator.FinalizeIteration(contexts[i].stream);
+                if (i != 0) {
+                    ACLBW_ASCEND_ASSERT(aclrtRecordEvent(contexts[i].endEvent, contexts[i].stream));
+                    ACLBW_ASCEND_ASSERT(aclrtSetDevice(contexts[0].deviceId));
+                    ACLBW_ASCEND_ASSERT(aclrtStreamWaitEvent(contexts[0].stream, contexts[i].endEvent));
+                }
             }
-            for (const auto& io : contexts[i].ioArray) {
-                initiator.Copy(io.src, io.dst, io.size, contexts[i].stream);
-            }
-            if (i != 0) {
-                ACLBW_ASCEND_ASSERT(aclrtRecordEvent(contexts[i].endEvent, contexts[i].stream));
-                ACLBW_ASCEND_ASSERT(aclrtSetDevice(contexts[0].deviceId));
-                ACLBW_ASCEND_ASSERT(aclrtStreamWaitEvent(contexts[0].stream, contexts[i].endEvent));
-            }
+            ACLBW_ASCEND_ASSERT(aclrtSetDevice(contexts[0].deviceId));
+            ACLBW_ASCEND_ASSERT(aclrtRecordEvent(totalEnd, contexts[0].stream));
+            ACLBW_ASCEND_ASSERT(aclrtSynchronizeEvent(totalEnd));
+            float cost = 0.f;
+            ACLBW_ASCEND_ASSERT(aclrtEventElapsedTime(&cost, totalStart, totalEnd));
+            ACLBW_ASCEND_ASSERT(aclrtDestroyEvent(totalStart));
+            ACLBW_ASCEND_ASSERT(aclrtDestroyEvent(totalEnd));
+            return cost;
+        } catch (...) {
+            ACLBW_ASCEND_ASSERT(aclrtSetDevice(contexts[0].deviceId));
+            if (totalStart != nullptr) { ACLBW_ASCEND_ASSERT(aclrtDestroyEvent(totalStart)); }
+            if (totalEnd != nullptr) { ACLBW_ASCEND_ASSERT(aclrtDestroyEvent(totalEnd)); }
+            throw;
         }
-        ACLBW_ASCEND_ASSERT(aclrtSetDevice(contexts[0].deviceId));
-        ACLBW_ASCEND_ASSERT(aclrtRecordEvent(totalEnd, contexts[0].stream));
-        ACLBW_ASCEND_ASSERT(aclrtSynchronizeEvent(totalEnd));
-        float cost = 0.f;
-        ACLBW_ASCEND_ASSERT(aclrtEventElapsedTime(&cost, totalStart, totalEnd));
-        ACLBW_ASCEND_ASSERT(aclrtDestroyEvent(totalStart));
-        ACLBW_ASCEND_ASSERT(aclrtDestroyEvent(totalEnd));
-        return cost;
     }
     static void Cleanup(std::vector<MemcpyStreamContext>& contexts)
     {
@@ -138,16 +147,21 @@ public:
         ACLBW_ASSERT(!srcBuffers.empty());
         ACLBW_ASSERT(srcBuffers.size() == dstBuffers.size());
         auto contexts = Dispatch(srcBuffers, dstBuffers, streamNumber_);
-        std::vector<double> durations;
-        durations.reserve(iterations_);
-        for (size_t i = 0; i < iterations_ + warmup_; i++) {
-            auto cost = ExecuteMemcpy(*memcpyInitiator_, contexts);
-            if (i >= warmup_) { durations.push_back(cost); }
+        try {
+            std::vector<double> durations;
+            durations.reserve(iterations_);
+            for (size_t i = 0; i < iterations_ + warmup_; i++) {
+                auto cost = ExecuteMemcpy(*memcpyInitiator_, contexts);
+                if (i >= warmup_) { durations.push_back(cost); }
+            }
+            Cleanup(contexts);
+            return {srcBuffers.front()->ReadMe(), dstBuffers.front()->ReadMe(),
+                    srcBuffers.front()->Size(), srcBuffers.front()->Number() * srcBuffers.size(),
+                    std::move(durations)};
+        } catch (...) {
+            Cleanup(contexts);
+            throw;
         }
-        Cleanup(contexts);
-        return {srcBuffers.front()->ReadMe(), dstBuffers.front()->ReadMe(),
-                srcBuffers.front()->Size(), srcBuffers.front()->Number() * srcBuffers.size(),
-                std::move(durations)};
     }
     MemcpyResult::Result DoMemcpy(const MemoryBuffer& srcBuffer, const MemoryBuffer& dstBuffer)
     {
