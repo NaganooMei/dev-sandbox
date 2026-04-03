@@ -1,7 +1,4 @@
 set(ASCEND_ROOT "/usr/local/Ascend/ascend-toolkit/latest" CACHE PATH "Path to Ascend root directory")
-get_filename_component(ACLBW_WORKSPACE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
-set(ACLBW_HCOMM_ROOT "${ACLBW_WORKSPACE_ROOT}/hcomm")
-set(ACLBW_HCCL_ROOT "${ACLBW_WORKSPACE_ROOT}/hccl")
 
 find_path(ASCEND_RUNTIME_API_PATH acl/acl.h ${ASCEND_ROOT}/include)
 find_library(ASCEND_RUNTIME_LIB ascendcl ${ASCEND_ROOT}/lib64)
@@ -13,16 +10,11 @@ if (ASCEND_RUNTIME_API_PATH AND ASCEND_RUNTIME_LIB)
     target_include_directories(aclbw PRIVATE ${ASCEND_RUNTIME_API_PATH})
     target_link_libraries(aclbw PRIVATE fmt::fmt ${ASCEND_RUNTIME_LIB})
     if (ASCEND_HCCL_LIB
-        AND EXISTS "${ACLBW_HCOMM_ROOT}/include/hccl/hccl_comm.h"
-        AND EXISTS "${ACLBW_HCOMM_ROOT}/src/framework/inc/hccl_api.h"
-        AND EXISTS "${ACLBW_HCCL_ROOT}/include/hccl.h")
+        AND EXISTS "${ASCEND_RUNTIME_API_PATH}/hccl/hccl_comm.h"
+        AND EXISTS "${ASCEND_RUNTIME_API_PATH}/hccl/hccl_res.h"
+        AND EXISTS "${ASCEND_RUNTIME_API_PATH}/hccl/hcomm_primitives.h"
+        AND EXISTS "${ASCEND_RUNTIME_API_PATH}/hccl.h")
         target_compile_definitions(aclbw PRIVATE ACLBW_ENABLE_HCOMM_EXPERIMENT)
-        target_include_directories(aclbw PRIVATE
-            "${ACLBW_HCOMM_ROOT}/include"
-            "${ACLBW_HCOMM_ROOT}/include/hccl"
-            "${ACLBW_HCOMM_ROOT}/pkg_inc"
-            "${ACLBW_HCOMM_ROOT}/src/framework/inc"
-            "${ACLBW_HCCL_ROOT}/include")
         target_link_libraries(aclbw PRIVATE ${ASCEND_HCCL_LIB})
         if (ASCEND_HCOMM_LIB)
             target_link_libraries(aclbw PRIVATE ${ASCEND_HCOMM_LIB})

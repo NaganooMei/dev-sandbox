@@ -13,9 +13,8 @@
 
 #ifdef ACLBW_ENABLE_HCOMM_EXPERIMENT
 #include <arpa/inet.h>
-#include <securec.h>
 
-#include "hccl_api.h"
+#include "hcomm_experimental_api.h"
 #endif
 
 namespace {
@@ -25,6 +24,55 @@ constexpr const char* kIntraRoceEnableEnv = "HCCL_INTRA_ROCE_ENABLE";
 std::string FormatFailure(const std::string& stage, int32_t code)
 {
     return fmt::format("{} failed, ret={}", stage, code);
+}
+
+std::string CommProtocolToString(AclbwCommProtocol protocol)
+{
+    switch (protocol) {
+        case ACLBW_COMM_PROTOCOL_HCCS:
+            return "HCCS";
+        case ACLBW_COMM_PROTOCOL_TCP:
+            return "TCP";
+        case ACLBW_COMM_PROTOCOL_ROCE:
+            return "ROCE";
+        case ACLBW_COMM_PROTOCOL_UB_CTP:
+            return "UB_CTP";
+        case ACLBW_COMM_PROTOCOL_UB_TP:
+            return "UB_TP";
+        case ACLBW_COMM_PROTOCOL_PCIE:
+            return "PCIE";
+        case ACLBW_COMM_PROTOCOL_SIO:
+            return "SIO";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+std::string CommAddrToString(const AclbwCommAddr& addr)
+{
+    std::array<char, INET6_ADDRSTRLEN> buf{};
+    if (addr.type == ACLBW_COMM_ADDR_TYPE_IP_V4) {
+        const auto* ip = reinterpret_cast<const struct in_addr*>(&addr.addr);
+        if (inet_ntop(AF_INET, ip, buf.data(), static_cast<socklen_t>(buf.size())) != nullptr) {
+            return buf.data();
+        }
+    }
+    if (addr.type == ACLBW_COMM_ADDR_TYPE_IP_V6) {
+        const auto* ip = reinterpret_cast<const struct in6_addr*>(&addr.addr6);
+        if (inet_ntop(AF_INET6, ip, buf.data(), static_cast<socklen_t>(buf.size())) != nullptr) {
+            return buf.data();
+        }
+    }
+    if (addr.type == ACLBW_COMM_ADDR_TYPE_ID) {
+        return fmt::format("id:{}", addr.id);
+    }
+    return fmt::format("type:{}", static_cast<int32_t>(addr.type));
+}
+
+std::string EndPointToString(const AclbwEndPoint& endpoint)
+{
+    return fmt::format("protocol={}, addr={}", CommProtocolToString(endpoint.protocol),
+                       CommAddrToString(endpoint.commAddr));
 }
 #endif
 }  // namespace
@@ -41,17 +89,17 @@ struct HcommRoceH2dSession::Impl {
 #ifdef ACLBW_ENABLE_HCOMM_EXPERIMENT
     HcclComm comm = nullptr;
     ThreadHandle thread = 0;
-    EndPoint* endpointList = nullptr;
+    AclbwEndPoint* endpointList = nullptr;
     uint32_t endpointCount = 0;
-    EndPoint localEndpoint{};
-    EndPoint remoteEndpoint{};
-    EndPointHandle localEndpointHandle = nullptr;
-    EndPointHandle remoteEndpointHandle = nullptr;
+    AclbwEndPoint localEndpoint{};
+    AclbwEndPoint remoteEndpoint{};
+    AclbwEndPointHandle localEndpointHandle = nullptr;
+    AclbwEndPointHandle remoteEndpointHandle = nullptr;
     void* hostMemHandle = nullptr;
     void* deviceMemHandle = nullptr;
     void* exportedDeviceMemDesc = nullptr;
     uint32_t exportedDeviceMemDescLen = 0;
-    HcommBuf importedRemoteBuffer{};
+    AclbwHcommBuf importedRemoteBuffer{};
     bool importedRemoteBufferReady = false;
     ChannelHandle channel = 0;
 #endif
@@ -61,59 +109,6 @@ struct HcommRoceH2dSession::Impl {
     {
     }
 };
-
-#ifdef ACLBW_ENABLE_HCOMM_EXPERIMENT
-namespace {
-std::string CommProtocolToString(CommProtocol protocol)
-{
-    switch (protocol) {
-        case COMM_PROTOCOL_HCCS:
-            return "HCCS";
-        case COMM_PROTOCOL_TCP:
-            return "TCP";
-        case COMM_PROTOCOL_ROCE:
-            return "ROCE";
-        case COMM_PROTOCOL_UB_CTP:
-            return "UB_CTP";
-        case COMM_PROTOCOL_UB_TP:
-            return "UB_TP";
-        case COMM_PROTOCOL_PCIE:
-            return "PCIE";
-        case COMM_PROTOCOL_SIO:
-            return "SIO";
-        default:
-            return "UNKNOWN";
-    }
-}
-
-std::string CommAddrToString(const CommAddr& addr)
-{
-    std::array<char, INET6_ADDRSTRLEN> buf{};
-    if (addr.type == COMM_ADDR_TYPE_IP_V4) {
-        const auto* ip = reinterpret_cast<const struct in_addr*>(&addr.addr);
-        if (inet_ntop(AF_INET, ip, buf.data(), static_cast<socklen_t>(buf.size())) != nullptr) {
-            return buf.data();
-        }
-    }
-    if (addr.type == COMM_ADDR_TYPE_IP_V6) {
-        const auto* ip = reinterpret_cast<const struct in6_addr*>(&addr.addr6);
-        if (inet_ntop(AF_INET6, ip, buf.data(), static_cast<socklen_t>(buf.size())) != nullptr) {
-            return buf.data();
-        }
-    }
-    if (addr.type == COMM_ADDR_TYPE_ID) {
-        return fmt::format("id:{}", addr.id);
-    }
-    return fmt::format("type:{}", static_cast<int32_t>(addr.type));
-}
-
-std::string EndPointToString(const EndPoint& endpoint)
-{
-    return fmt::format("protocol={}, addr={}", CommProtocolToString(endpoint.protocol),
-                       CommAddrToString(endpoint.commAddr));
-}
-}  // namespace
-#endif
 
 HcommRoceH2dSession::HcommRoceH2dSession(int32_t deviceId, void* hostBase, void* deviceBase,
                                          size_t totalSize)
@@ -150,7 +145,8 @@ HcommRoceH2dSession::HcommRoceH2dSession(int32_t deviceId, void* hostBase, void*
     fmt::print("[aclbw][hcomm] HcclCommInitAll success on device {}\n", impl_->deviceId);
 
     const auto threadRet =
-        HcclThreadAcquire(impl_->comm, COMM_ENGINE_AICPU, 1U, 0U, &impl_->thread);
+        HcclThreadAcquire(impl_->comm, static_cast<CommEngine>(ACLBW_COMM_ENGINE_AICPU), 1U, 0U,
+                          &impl_->thread);
     if (threadRet != HCCL_SUCCESS) {
         impl_->error = FormatFailure("HcclThreadAcquire", threadRet);
         return;
@@ -166,12 +162,12 @@ HcommRoceH2dSession::HcommRoceH2dSession(int32_t deviceId, void* hostBase, void*
     fmt::print("[aclbw][hcomm] HcommEndPointGet success, endpoint_count={}\n",
                impl_->endpointCount);
 
-    std::vector<EndPoint> roceEndpoints;
+    std::vector<AclbwEndPoint> roceEndpoints;
     roceEndpoints.reserve(impl_->endpointCount);
     for (uint32_t i = 0; i < impl_->endpointCount; ++i) {
         const auto& endpoint = impl_->endpointList[i];
         fmt::print("[aclbw][hcomm] endpoint[{}] {}\n", i, EndPointToString(endpoint));
-        if (endpoint.protocol == COMM_PROTOCOL_ROCE) {
+        if (endpoint.protocol == ACLBW_COMM_PROTOCOL_ROCE) {
             roceEndpoints.push_back(endpoint);
         }
     }
@@ -205,7 +201,7 @@ HcommRoceH2dSession::HcommRoceH2dSession(int32_t deviceId, void* hostBase, void*
     fmt::print("[aclbw][hcomm] remote endpoint open success: {}\n",
                EndPointToString(impl_->remoteEndpoint));
 
-    HcclMem hostMem{HCCL_MEM_TYPE_HOST, impl_->hostBase, impl_->totalSize};
+    AclbwHcclMem hostMem{ACLBW_HCCL_MEM_TYPE_HOST, impl_->hostBase, impl_->totalSize};
     const auto hostMemRet =
         HcommMemReg(impl_->localEndpointHandle, hostMem, &impl_->hostMemHandle);
     if (hostMemRet != HCCL_SUCCESS) {
@@ -214,7 +210,7 @@ HcommRoceH2dSession::HcommRoceH2dSession(int32_t deviceId, void* hostBase, void*
     }
     fmt::print("[aclbw][hcomm] host memory register success, size={}\n", impl_->totalSize);
 
-    HcclMem deviceMem{HCCL_MEM_TYPE_DEVICE, impl_->deviceBase, impl_->totalSize};
+    AclbwHcclMem deviceMem{ACLBW_HCCL_MEM_TYPE_DEVICE, impl_->deviceBase, impl_->totalSize};
     const auto deviceMemRet =
         HcommMemReg(impl_->remoteEndpointHandle, deviceMem, &impl_->deviceMemHandle);
     if (deviceMemRet != HCCL_SUCCESS) {
@@ -244,7 +240,7 @@ HcommRoceH2dSession::HcommRoceH2dSession(int32_t deviceId, void* hostBase, void*
     fmt::print("[aclbw][hcomm] device memory import success, remote_addr={}\n",
                fmt::ptr(impl_->importedRemoteBuffer.addr));
 
-    HcommChannelDesc channelDesc{};
+    AclbwHcommChannelDesc channelDesc{};
     channelDesc.remoteEndPoint = impl_->remoteEndpoint;
     channelDesc.notifyNum = 0;
     channelDesc.roceAttr.queueNum = 1;
@@ -253,9 +249,10 @@ HcommRoceH2dSession::HcommRoceH2dSession(int32_t deviceId, void* hostBase, void*
     channelDesc.roceAttr.tc = 0;
     channelDesc.roceAttr.sl = 0;
     const void* memHandles[1] = {impl_->hostMemHandle};
-    const auto channelRet =
-        HcommChannelCreate(&impl_->localEndpointHandle, COMM_ENGINE_AICPU, &channelDesc, 1,
-                           memHandles, 1, &impl_->channel);
+    const auto channelRet = HcommChannelCreate(&impl_->localEndpointHandle,
+                                               ACLBW_COMM_ENGINE_AICPU,
+                                               &channelDesc, 1, memHandles, 1,
+                                               &impl_->channel);
     if (channelRet != HCCL_SUCCESS) {
         impl_->error = FormatFailure("HcommChannelCreate", channelRet);
         return;
@@ -343,8 +340,7 @@ void HcommRoceH2dSession::Write(void* src, void* dst, size_t size) const
     }
 
     auto offset = static_cast<size_t>(curDst - dstBase);
-    auto* remoteDst =
-        static_cast<uint8_t*>(impl_->importedRemoteBuffer.addr) + offset;
+    auto* remoteDst = static_cast<uint8_t*>(impl_->importedRemoteBuffer.addr) + offset;
     const auto ret = HcommWriteOnThread(impl_->thread, impl_->channel, remoteDst, src, size);
     if (ret != HCCL_SUCCESS) {
         throw std::runtime_error(FormatFailure("HcommWriteOnThread", ret));
