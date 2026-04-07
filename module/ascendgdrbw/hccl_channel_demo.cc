@@ -61,8 +61,17 @@ void CheckHccl(HcclResult ret, const char* expr)
     }
 }
 
+void CheckHcomm(int32_t ret, const char* expr)
+{
+    if (ret != 0) {
+        throw std::runtime_error(std::string("HCOMM failed: ") + expr +
+                                 " ret=" + std::to_string(ret));
+    }
+}
+
 #define ACL_CHECK(expr) CheckAcl((expr), #expr)
 #define HCCL_CHECK(expr) CheckHccl((expr), #expr)
+#define HCOMM_CHECK(expr) CheckHcomm((expr), #expr)
 
 void FillHostPattern(std::vector<uint8_t>& buffer)
 {
@@ -152,16 +161,16 @@ void ReceiverThread(HcclRootInfo* rootInfo, SharedState* state, const DemoCase* 
 
         std::fprintf(stderr, "[channel-demo][rank0] wait ACK for case=%s bytes=%llu\n", demoCase->name,
                      static_cast<unsigned long long>(demoCase->bytes));
-        HCCL_CHECK(HcommChannelNotifyWaitOnThread(resources.thread, resources.channel, kNotifyIdxAck,
-                                                  kWaitTimeoutMs));
+        HCOMM_CHECK(HcommChannelNotifyWaitOnThread(resources.thread, resources.channel, kNotifyIdxAck,
+                                                   kWaitTimeoutMs));
 
         std::fprintf(stderr, "[channel-demo][rank0] HcommReadOnThread begin, dst=%p src=%p bytes=%llu\n",
                      receiverDeviceBuffer, resources.remoteBuffer,
                      static_cast<unsigned long long>(demoCase->bytes));
-        HCCL_CHECK(HcommReadOnThread(resources.thread, resources.channel, receiverDeviceBuffer,
-                                     resources.remoteBuffer, demoCase->bytes));
+        HCOMM_CHECK(HcommReadOnThread(resources.thread, resources.channel, receiverDeviceBuffer,
+                                      resources.remoteBuffer, demoCase->bytes));
 
-        HCCL_CHECK(HcommChannelNotifyRecordOnThread(resources.thread, resources.channel, kNotifyIdxData));
+        HCOMM_CHECK(HcommChannelNotifyRecordOnThread(resources.thread, resources.channel, kNotifyIdxData));
 
         std::vector<uint8_t> receivedHost(demoCase->bytes, 0);
         ACL_CHECK(aclrtMemcpy(receivedHost.data(), demoCase->bytes, receiverDeviceBuffer, demoCase->bytes,
@@ -205,13 +214,13 @@ void SenderThread(HcclRootInfo* rootInfo, SharedState* state, const DemoCase* de
         std::fprintf(stderr, "[channel-demo][rank1] HcommLocalCopyOnThread begin, dst=%p src=%p bytes=%llu\n",
                      resources.localBuffer, senderDeviceBuffer,
                      static_cast<unsigned long long>(demoCase->bytes));
-        HCCL_CHECK(HcommLocalCopyOnThread(resources.thread, resources.localBuffer, senderDeviceBuffer,
-                                          demoCase->bytes));
+        HCOMM_CHECK(HcommLocalCopyOnThread(resources.thread, resources.localBuffer, senderDeviceBuffer,
+                                           demoCase->bytes));
 
-        HCCL_CHECK(HcommChannelNotifyRecordOnThread(resources.thread, resources.channel, kNotifyIdxAck));
+        HCOMM_CHECK(HcommChannelNotifyRecordOnThread(resources.thread, resources.channel, kNotifyIdxAck));
         std::fprintf(stderr, "[channel-demo][rank1] ACK sent, wait DATA_SIGNAL\n");
-        HCCL_CHECK(HcommChannelNotifyWaitOnThread(resources.thread, resources.channel, kNotifyIdxData,
-                                                  kWaitTimeoutMs));
+        HCOMM_CHECK(HcommChannelNotifyWaitOnThread(resources.thread, resources.channel, kNotifyIdxData,
+                                                   kWaitTimeoutMs));
         state->senderDone.store(true, std::memory_order_release);
     } catch (const std::exception& ex) {
         if (error != nullptr) {
