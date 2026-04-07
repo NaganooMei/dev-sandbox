@@ -30,6 +30,13 @@ if(ASCEND_RUNTIME_API_PATH AND ASCEND_RUNTIME_LIB AND HCCL_INCLUDE_PATH AND HCCL
     target_include_directories(ascendgdrbw_hccl_h2d_put_demo PRIVATE ${ASCEND_RUNTIME_API_PATH} ${HCCL_INCLUDE_PATH})
     target_link_libraries(ascendgdrbw_hccl_h2d_put_demo PRIVATE fmt::fmt ${ASCEND_RUNTIME_LIB} ${HCCL_LIB}
                                                                 Threads::Threads)
+
+    add_executable(ascendgdrbw_hccl_channel_demo
+        hccl_channel_demo.cc
+    )
+    target_include_directories(ascendgdrbw_hccl_channel_demo PRIVATE ${ASCEND_RUNTIME_API_PATH} ${HCCL_INCLUDE_PATH})
+    target_link_libraries(ascendgdrbw_hccl_channel_demo PRIVATE fmt::fmt ${ASCEND_RUNTIME_LIB} ${HCCL_LIB}
+                                                                Threads::Threads)
 else()
-    message(WARNING "Skipping ascendgdrbw_hccl_h2d_put_demo because HCCL headers or library were not found under ${ASCEND_ROOT}")
+    message(WARNING "Skipping ascendgdrbw_hccl demos because HCCL headers or library were not found under ${ASCEND_ROOT}")
 endif()
