@@ -33,6 +33,19 @@
 #include <unordered_map>
 #include <vector>
 
+struct MemoryRegistration {
+    enum class Backend {
+        Ibverbs,
+        RaGlobal,
+    };
+
+    Backend backend = Backend::Ibverbs;
+    ibv_mr* ibvMemoryRegion = nullptr;
+    void* mrHandle = nullptr;
+    uint32_t lkey = 0;
+    uint32_t rkey = 0;
+};
+
 struct RDMAChannelConfig {
     int cqDepth = 1024;
     int qpSendWr = 1024;
@@ -49,14 +62,17 @@ public:
     RDMAChannel(RDMAChannel&&) = delete;
     RDMAChannel& operator=(RDMAChannel&&) = delete;
 
-    ibv_mr* RegisterHostMemory(void* buffer, size_t bytes);
-    ibv_mr* RegisterDeviceMemory(void* buffer, size_t bytes);
+    MemoryRegistration* RegisterHostMemory(void* buffer, size_t bytes);
+    MemoryRegistration* RegisterDeviceMemory(void* buffer, size_t bytes);
+    void DeregisterMemory(MemoryRegistration* registration) noexcept;
     uint64_t SubmitWrite(uint64_t localAddress, uint32_t localLKey, uint64_t remoteAddress,
                          uint32_t remoteRKey, size_t bytes);
     void Wait(uint64_t targetWorkRequestId);
 
     int32_t DeviceId() const noexcept { return deviceId_; }
     const std::string& NicName() const noexcept { return nicName_; }
+    const std::string& ResolvedIbvDeviceName() const noexcept { return resolvedIbvDeviceName_; }
+    const std::string& ResolvedDeviceIp() const noexcept { return resolvedDeviceIp_; }
 
 private:
     void PollOneCompletion();
@@ -66,7 +82,14 @@ private:
     ibv_cq* completionQueue_ = nullptr;
     ibv_qp* queuePair_ = nullptr;
     int32_t deviceId_ = 0;
+    int32_t deviceLogicId_ = -1;
+    uint32_t devicePhyId_ = 0;
     std::string nicName_;
+    std::string resolvedIbvDeviceName_;
+    std::string resolvedDeviceIp_;
+    void* rdmaHandle_ = nullptr;
+    bool netInitialized_ = false;
+    int gidIndex_ = 0;
     uint64_t nextWorkRequestId_ = 1;
     uint64_t completedWorkRequestId_ = 0;
     uint32_t outstandingWorkRequests_ = 0;

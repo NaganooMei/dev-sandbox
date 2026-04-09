@@ -26,12 +26,21 @@
 #include <acl/acl.h>
 
 #include <algorithm>
+#include <arpa/inet.h>
+#include <exception>
 #include <cstdio>
 #include <cstring>
 #include <limits>
 #include <thread>
 
+#include "adapter_hccp.h"
+#include "adapter_hccp_common.h"
+#include "env_config.h"
 #include "error_handle.h"
+#include "externalinput_pub.h"
+#include "hccl_ip_address.h"
+#include "hccl_network_pub.h"
+#include "op_base.h"
 
 namespace {
 
@@ -40,20 +49,131 @@ constexpr int kIbvPort = 1;
 struct QPEndpoint {
     uint32_t qpn = 0;
     uint16_t lid = 0;
+    int gidIndex = 0;
     uint8_t gid[16] = {};
 };
 
-QPEndpoint QueryEndpoint(ibv_qp* queuePair, ibv_context* context)
+void CheckHccl(HcclResult ret, const char* expr)
+{
+    if (ret != HCCL_SUCCESS) {
+        AscendGdrbwThrowError(std::string(expr) + " failed, ret=" + std::to_string(static_cast<int>(ret)));
+    }
+}
+
+#define ASCENDGDRBW_HCCL_ASSERT(expr) CheckHccl((expr), #expr)
+
+bool CompareIpAndGid(const hccl::HcclIpAddress& localIp, const union ibv_gid& gid)
+{
+    if (localIp.GetFamily() == AF_INET6) {
+        const auto binary = localIp.GetBinaryAddress();
+        return std::memcmp(&gid, &binary.addr6, sizeof(gid)) == 0;
+    }
+
+    uint32_t gidV4[4] = {0, 0, htonl(0x0000FFFF), localIp.GetBinaryAddress().addr.s_addr};
+    return std::memcmp(&gid, gidV4, sizeof(gid)) == 0;
+}
+
+hccl::HcclIpAddress ResolveDeviceIp(uint32_t devicePhyId)
+{
+    std::vector<hccl::HcclIpAddress> deviceIps;
+    ASCENDGDRBW_HCCL_ASSERT(hrtRaGetDeviceIP(devicePhyId, deviceIps));
+    for (const auto& ip : deviceIps) {
+        if (!ip.IsInvalid() && !ip.IsIPv6()) {
+            return ip;
+        }
+    }
+    for (const auto& ip : deviceIps) {
+        if (!ip.IsInvalid()) {
+            return ip;
+        }
+    }
+    AscendGdrbwThrowError("failed to resolve a valid device IP");
+    return hccl::HcclIpAddress();
+}
+
+ibv_context* OpenNicContextByDeviceIp(const hccl::HcclIpAddress& deviceIp,
+                                      std::string& resolvedIbvDeviceName, int& gidIndex)
+{
+    int deviceCount = 0;
+    ibv_device** deviceList = ibv_get_device_list(&deviceCount);
+    ASCENDGDRBW_ASSERT(deviceList != nullptr);
+    ASCENDGDRBW_ASSERT(deviceCount > 0);
+
+    ibv_context* matchedContext = nullptr;
+    for (int index = 0; index < deviceCount; ++index) {
+        ibv_context* context = ibv_open_device(deviceList[index]);
+        if (context == nullptr) {
+            continue;
+        }
+
+        ibv_port_attr portAttr = {};
+        const int queryPortRet = ibv_query_port(context, kIbvPort, &portAttr);
+        if (queryPortRet != 0) {
+            (void)ibv_close_device(context);
+            continue;
+        }
+
+        int matchedGidIndex = -1;
+        for (int gidTableIndex = 0; gidTableIndex < portAttr.gid_tbl_len; ++gidTableIndex) {
+            union ibv_gid gid = {};
+            if (ibv_query_gid(context, kIbvPort, gidTableIndex, &gid) != 0) {
+                continue;
+            }
+            if (CompareIpAndGid(deviceIp, gid)) {
+                matchedGidIndex = gidTableIndex;
+                break;
+            }
+        }
+
+        if (matchedGidIndex >= 0) {
+            matchedContext = context;
+            gidIndex = matchedGidIndex;
+            resolvedIbvDeviceName = ibv_get_device_name(deviceList[index]);
+            break;
+        }
+
+        (void)ibv_close_device(context);
+    }
+
+    ibv_free_device_list(deviceList);
+    if (matchedContext == nullptr) {
+        AscendGdrbwThrowError("failed to resolve ibverbs device by device IP " +
+                              std::string(deviceIp.GetReadableAddress()));
+    }
+    return matchedContext;
+}
+
+ibv_context* OpenNicContextByName(const std::string& nicName)
+{
+    int deviceCount = 0;
+    ibv_device** deviceList = ibv_get_device_list(&deviceCount);
+    ASCENDGDRBW_ASSERT(deviceList != nullptr);
+    ASCENDGDRBW_ASSERT(deviceCount > 0);
+
+    ibv_context* context = nullptr;
+    for (int index = 0; index < deviceCount; ++index) {
+        if (nicName == ibv_get_device_name(deviceList[index])) {
+            context = ibv_open_device(deviceList[index]);
+            break;
+        }
+    }
+
+    ibv_free_device_list(deviceList);
+    return context;
+}
+
+QPEndpoint QueryEndpoint(ibv_qp* queuePair, ibv_context* context, int gidIndex)
 {
     QPEndpoint endpoint;
     endpoint.qpn = queuePair->qp_num;
+    endpoint.gidIndex = gidIndex;
 
     ibv_port_attr portAttr = {};
     ASCENDGDRBW_IBV_ASSERT(ibv_query_port(context, kIbvPort, &portAttr));
     endpoint.lid = portAttr.lid;
 
     union ibv_gid gid = {};
-    ASCENDGDRBW_IBV_ASSERT(ibv_query_gid(context, kIbvPort, 0, &gid));
+    ASCENDGDRBW_IBV_ASSERT(ibv_query_gid(context, kIbvPort, gidIndex, &gid));
     std::memcpy(endpoint.gid, &gid, sizeof(endpoint.gid));
     return endpoint;
 }
@@ -88,7 +208,7 @@ void ConnectQueuePair(ibv_qp* queuePair, const QPEndpoint& remoteEndpoint, bool 
             attr.ah_attr.is_global = 1;
             attr.ah_attr.grh.hop_limit = 64;
             std::memcpy(&attr.ah_attr.grh.dgid, remoteEndpoint.gid, sizeof(remoteEndpoint.gid));
-            attr.ah_attr.grh.sgid_index = 0;
+            attr.ah_attr.grh.sgid_index = static_cast<uint8_t>(remoteEndpoint.gidIndex);
             attr.ah_attr.dlid = 0;
         } else {
             attr.ah_attr.is_global = 0;
@@ -116,42 +236,36 @@ void ConnectQueuePair(ibv_qp* queuePair, const QPEndpoint& remoteEndpoint, bool 
     }
 }
 
-ibv_context* OpenNicContext(const std::string& nicName)
-{
-    int deviceCount = 0;
-    ibv_device** deviceList = ibv_get_device_list(&deviceCount);
-    ASCENDGDRBW_ASSERT(deviceList != nullptr);
-    ASCENDGDRBW_ASSERT(deviceCount > 0);
-
-    ibv_context* context = nullptr;
-    for (int index = 0; index < deviceCount; ++index) {
-        if (nicName == ibv_get_device_name(deviceList[index])) {
-            context = ibv_open_device(deviceList[index]);
-            break;
-        }
-    }
-
-    if (context == nullptr) {
-        ibv_free_device_list(deviceList);
-        AscendGdrbwThrowError("RDMA device not found: " + nicName);
-    }
-
-    ibv_free_device_list(deviceList);
-    return context;
-}
-
 }  // namespace
 
 RDMAChannel::RDMAChannel(int32_t deviceId, std::string nicName, const RDMAChannelConfig& config)
     : deviceId_(deviceId), nicName_(std::move(nicName))
 {
     ASCENDGDRBW_ASCEND_ASSERT(aclrtSetDevice(deviceId_));
+    ASCENDGDRBW_HCCL_ASSERT(HcclDeviceRefresh(deviceLogicId_));
+    ASCENDGDRBW_HCCL_ASSERT(InitExternalInput());
+    ASCENDGDRBW_HCCL_ASSERT(InitEnvConfig());
+    ASCENDGDRBW_HCCL_ASSERT(hrtGetDevicePhyIdByIndex(static_cast<uint32_t>(deviceLogicId_), devicePhyId_));
+    ASCENDGDRBW_HCCL_ASSERT(HcclNetInit(NICDeployment::NIC_DEPLOYMENT_DEVICE,
+                                        static_cast<int32_t>(devicePhyId_), deviceLogicId_, false, false));
+    netInitialized_ = true;
+
     ASCENDGDRBW_ASSERT(config.cqDepth > 0);
     ASCENDGDRBW_ASSERT(config.qpSendWr > 0);
     ASCENDGDRBW_ASSERT(config.qpRecvWr > 0);
 
-    context_ = OpenNicContext(nicName_);
+    hccl::HcclIpAddress bindIp = ResolveDeviceIp(devicePhyId_);
+    resolvedDeviceIp_ = bindIp.GetReadableAddress();
+    try {
+        context_ = OpenNicContextByDeviceIp(bindIp, resolvedIbvDeviceName_, gidIndex_);
+    } catch (const std::exception&) {
+        context_ = OpenNicContextByName(nicName_);
+        resolvedIbvDeviceName_ = nicName_;
+        gidIndex_ = 0;
+    }
     ASCENDGDRBW_ASSERT(context_ != nullptr);
+    ASCENDGDRBW_HCCL_ASSERT(HrtRaRdmaGetHandle(devicePhyId_, rdmaHandle_));
+    ASCENDGDRBW_ASSERT(rdmaHandle_ != nullptr);
 
     protectionDomain_ = ibv_alloc_pd(context_);
     ASCENDGDRBW_ASSERT(protectionDomain_ != nullptr);
@@ -189,7 +303,12 @@ RDMAChannel::RDMAChannel(int32_t deviceId, std::string nicName, const RDMAChanne
     maxOutstandingWorkRequests_ = std::max<uint32_t>(
         1u, std::min<uint32_t>(qpInitAttr.cap.max_send_wr, cqWindow));
 
-    const QPEndpoint endpoint = QueryEndpoint(queuePair_, context_);
+    std::fprintf(stderr,
+                 "[ascendgdrbw] RDMAChannel init: requested_nic=%s resolved_ibv=%s device=%d logic=%d phy=%u ip=%s gid_index=%d\n",
+                 nicName_.c_str(), resolvedIbvDeviceName_.c_str(), deviceId_, deviceLogicId_,
+                 devicePhyId_, resolvedDeviceIp_.c_str(), gidIndex_);
+
+    const QPEndpoint endpoint = QueryEndpoint(queuePair_, context_, gidIndex_);
     ConnectQueuePair(queuePair_, endpoint, isRoce, portAttr.active_mtu);
 }
 
@@ -199,9 +318,14 @@ RDMAChannel::~RDMAChannel()
     if (completionQueue_ != nullptr) { ibv_destroy_cq(completionQueue_); }
     if (protectionDomain_ != nullptr) { ibv_dealloc_pd(protectionDomain_); }
     if (context_ != nullptr) { ibv_close_device(context_); }
+    if (netInitialized_) {
+        (void)HcclNetDeInit(NICDeployment::NIC_DEPLOYMENT_DEVICE,
+                            static_cast<int32_t>(devicePhyId_), deviceLogicId_, false);
+        netInitialized_ = false;
+    }
 }
 
-ibv_mr* RDMAChannel::RegisterHostMemory(void* buffer, size_t bytes)
+MemoryRegistration* RDMAChannel::RegisterHostMemory(void* buffer, size_t bytes)
 {
     ASCENDGDRBW_ASSERT(buffer != nullptr);
     ASCENDGDRBW_ASSERT(bytes > 0);
@@ -225,36 +349,73 @@ ibv_mr* RDMAChannel::RegisterHostMemory(void* buffer, size_t bytes)
                      memoryRegion->lkey, memoryRegion->rkey);
     }
     ASCENDGDRBW_ERRNO_ASSERT(memoryRegion != nullptr);
-    return memoryRegion;
+
+    auto* registration = new MemoryRegistration();
+    registration->backend = MemoryRegistration::Backend::Ibverbs;
+    registration->ibvMemoryRegion = memoryRegion;
+    registration->lkey = memoryRegion->lkey;
+    registration->rkey = memoryRegion->rkey;
+    return registration;
 }
 
-ibv_mr* RDMAChannel::RegisterDeviceMemory(void* buffer, size_t bytes)
+MemoryRegistration* RDMAChannel::RegisterDeviceMemory(void* buffer, size_t bytes)
 {
     ASCENDGDRBW_ASSERT(buffer != nullptr);
     ASCENDGDRBW_ASSERT(bytes > 0);
     ASCENDGDRBW_ASCEND_ASSERT(aclrtSetDevice(deviceId_));
     std::fprintf(stderr,
-                 "[ascendgdrbw] RegisterDeviceMemory begin: nic=%s device=%d pd=%p buffer=%p "
-                 "bytes=%zu flags=0x%x\n",
-                 nicName_.c_str(), deviceId_, static_cast<void*>(protectionDomain_), buffer, bytes,
-                 IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
-    ibv_mr* memoryRegion = ibv_reg_mr(
-        protectionDomain_, buffer, bytes, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
-    if (memoryRegion == nullptr) {
+                 "[ascendgdrbw] RegisterDeviceMemory begin: requested_nic=%s resolved_ibv=%s "
+                 "device=%d phy=%u rdmaHandle=%p buffer=%p bytes=%zu\n",
+                 nicName_.c_str(), resolvedIbvDeviceName_.c_str(), deviceId_, devicePhyId_,
+                 rdmaHandle_, buffer, bytes);
+
+    MrInfoT info = {};
+    info.addr = buffer;
+    info.size = static_cast<unsigned long long>(bytes);
+    info.access = RA_ACCESS_LOCAL_WRITE | RA_ACCESS_REMOTE_WRITE | RA_ACCESS_REMOTE_READ;
+    MrHandle mrHandle = nullptr;
+    const HcclResult ret = hrtRaRegGlobalMr(rdmaHandle_, info, mrHandle);
+    if (ret != HCCL_SUCCESS || mrHandle == nullptr) {
         std::fprintf(stderr,
-                     "[ascendgdrbw] RegisterDeviceMemory failed: nic=%s device=%d pd=%p "
-                     "buffer=%p bytes=%zu errno=%d(%s)\n",
-                     nicName_.c_str(), deviceId_, static_cast<void*>(protectionDomain_), buffer,
-                     bytes, errno, std::strerror(errno));
+                     "[ascendgdrbw] RegisterDeviceMemory failed: requested_nic=%s resolved_ibv=%s "
+                     "device=%d phy=%u buffer=%p bytes=%zu ret=%d\n",
+                     nicName_.c_str(), resolvedIbvDeviceName_.c_str(), deviceId_, devicePhyId_, buffer,
+                     bytes, static_cast<int>(ret));
     } else {
         std::fprintf(stderr,
-                     "[ascendgdrbw] RegisterDeviceMemory success: nic=%s device=%d mr=%p "
-                     "lkey=%u rkey=%u\n",
-                     nicName_.c_str(), deviceId_, static_cast<void*>(memoryRegion),
-                     memoryRegion->lkey, memoryRegion->rkey);
+                     "[ascendgdrbw] RegisterDeviceMemory success: requested_nic=%s resolved_ibv=%s "
+                     "device=%d mrHandle=%p lkey=%u rkey=%u\n",
+                     nicName_.c_str(), resolvedIbvDeviceName_.c_str(), deviceId_, mrHandle,
+                     info.lkey, info.rkey);
     }
-    ASCENDGDRBW_ERRNO_ASSERT(memoryRegion != nullptr);
-    return memoryRegion;
+    ASCENDGDRBW_HCCL_ASSERT(ret);
+    ASCENDGDRBW_ASSERT(mrHandle != nullptr);
+
+    auto* registration = new MemoryRegistration();
+    registration->backend = MemoryRegistration::Backend::RaGlobal;
+    registration->mrHandle = mrHandle;
+    registration->lkey = info.lkey;
+    registration->rkey = info.rkey;
+    return registration;
+}
+
+void RDMAChannel::DeregisterMemory(MemoryRegistration* registration) noexcept
+{
+    if (registration == nullptr) {
+        return;
+    }
+
+    if (registration->backend == MemoryRegistration::Backend::Ibverbs) {
+        if (registration->ibvMemoryRegion != nullptr) {
+            (void)ibv_dereg_mr(registration->ibvMemoryRegion);
+        }
+    } else {
+        if (registration->mrHandle != nullptr && rdmaHandle_ != nullptr) {
+            (void)hrtRaDeRegGlobalMr(rdmaHandle_, registration->mrHandle);
+        }
+    }
+
+    delete registration;
 }
 
 uint64_t RDMAChannel::SubmitWrite(uint64_t localAddress, uint32_t localLKey, uint64_t remoteAddress,

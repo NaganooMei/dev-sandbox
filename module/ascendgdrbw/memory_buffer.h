@@ -39,7 +39,7 @@ protected:
     int32_t deviceId_;
     size_t size_;
     size_t number_;
-    std::unordered_map<int32_t, ibv_mr*> memoryRegions_;
+    std::unordered_map<int32_t, MemoryRegistration*> memoryRegions_;
 
     void RegisterHostMemoryForAllChannels()
     {
@@ -62,12 +62,14 @@ protected:
     void ReleaseMemoryRegions() noexcept
     {
         for (auto& entry : memoryRegions_) {
-            if (entry.second != nullptr) { ibv_dereg_mr(entry.second); }
+            if (entry.second != nullptr) {
+                ChannelManager::Instance().Get(entry.first).DeregisterMemory(entry.second);
+            }
         }
         memoryRegions_.clear();
     }
 
-    ibv_mr* FindMemoryRegion(int32_t targetDeviceId) const
+    MemoryRegistration* FindMemoryRegion(int32_t targetDeviceId) const
     {
         const auto it = memoryRegions_.find(targetDeviceId);
         return (it == memoryRegions_.end()) ? nullptr : it->second;
@@ -101,15 +103,15 @@ public:
     bool HasMR(int32_t targetDeviceId) const { return FindMemoryRegion(targetDeviceId) != nullptr; }
     uint32_t LKey(int32_t targetDeviceId) const
     {
-        auto* memoryRegion = FindMemoryRegion(targetDeviceId);
-        ASCENDGDRBW_ASSERT(memoryRegion != nullptr);
-        return memoryRegion->lkey;
+        auto* registration = FindMemoryRegion(targetDeviceId);
+        ASCENDGDRBW_ASSERT(registration != nullptr);
+        return registration->lkey;
     }
     uint32_t RKey() const
     {
-        auto* memoryRegion = FindMemoryRegion(deviceId_);
-        ASCENDGDRBW_ASSERT(memoryRegion != nullptr);
-        return memoryRegion->rkey;
+        auto* registration = FindMemoryRegion(deviceId_);
+        ASCENDGDRBW_ASSERT(registration != nullptr);
+        return registration->rkey;
     }
 };
 
