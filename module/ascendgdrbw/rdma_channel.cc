@@ -93,51 +93,31 @@ bool CompareIpAndGid(const hccl::HcclIpAddress& localIp, const union ibv_gid& gi
 hccl::HcclIpAddress ResolveDeviceIp(uint32_t devicePhyId, int32_t deviceLogicId)
 {
     std::fprintf(stderr, "[ascendgdrbw] ResolveDeviceIp begin: phy=%u logic=%d\n", devicePhyId, deviceLogicId);
-    HcclNetDevCtx netDevCtx = nullptr;
-    hccl::HcclIpAddress localIp;
-    try {
-        ASCENDGDRBW_HCCL_ASSERT(HcclNetOpenDev(&netDevCtx,
-                                               NicType::DEVICE_NIC_TYPE,
-                                               static_cast<int32_t>(devicePhyId),
-                                               deviceLogicId,
-                                               hccl::HcclIpAddress(0)));
-        ASCENDGDRBW_HCCL_ASSERT(HcclNetDevGetLocalIp(netDevCtx, localIp));
-    } catch (const std::bad_alloc& ex) {
-        if (netDevCtx != nullptr) {
-            HcclNetCloseDev(netDevCtx);
-            netDevCtx = nullptr;
+    std::vector<hccl::HcclIpAddress> deviceIps;
+    ASCENDGDRBW_HCCL_ASSERT(hrtRaGetDeviceIP(devicePhyId, deviceIps));
+    std::fprintf(stderr, "[ascendgdrbw] ResolveDeviceIp via hrtRaGetDeviceIP: phy=%u logic=%d candidates=%zu\n",
+                 devicePhyId, deviceLogicId, deviceIps.size());
+    for (size_t index = 0; index < deviceIps.size(); ++index) {
+        std::fprintf(stderr, "[ascendgdrbw]   candidate[%zu]=%s family=%d invalid=%d\n", index,
+                     deviceIps[index].GetReadableAddress(), deviceIps[index].GetFamily(),
+                     deviceIps[index].IsInvalid() ? 1 : 0);
+    }
+    for (const auto& ip : deviceIps) {
+        if (!ip.IsInvalid() && !ip.IsIPv6()) {
+            std::fprintf(stderr, "[ascendgdrbw] ResolveDeviceIp select IPv4=%s\n",
+                         ip.GetReadableAddress());
+            return ip;
         }
-        std::fprintf(stderr,
-                     "[ascendgdrbw] ResolveDeviceIp bad_alloc while opening netdev/local ip: phy=%u logic=%d what=%s\n",
-                     devicePhyId, deviceLogicId, ex.what());
-        throw;
-    } catch (const std::exception& ex) {
-        if (netDevCtx != nullptr) {
-            HcclNetCloseDev(netDevCtx);
-            netDevCtx = nullptr;
+    }
+    for (const auto& ip : deviceIps) {
+        if (!ip.IsInvalid()) {
+            std::fprintf(stderr, "[ascendgdrbw] ResolveDeviceIp select fallback=%s\n",
+                         ip.GetReadableAddress());
+            return ip;
         }
-        std::fprintf(stderr,
-                     "[ascendgdrbw] ResolveDeviceIp exception while opening netdev/local ip: phy=%u logic=%d what=%s\n",
-                     devicePhyId, deviceLogicId, ex.what());
-        throw;
     }
-
-    if (netDevCtx != nullptr) {
-        HcclNetCloseDev(netDevCtx);
-        netDevCtx = nullptr;
-    }
-
-    std::fprintf(stderr, "[ascendgdrbw] ResolveDeviceIp via netdev: phy=%u logic=%d ip=%s family=%d invalid=%d\n",
-                 devicePhyId, deviceLogicId, localIp.GetReadableAddress(), localIp.GetFamily(),
-                 localIp.IsInvalid() ? 1 : 0);
-    if (!localIp.IsInvalid() && !localIp.IsIPv6()) {
-        return localIp;
-    }
-    if (!localIp.IsInvalid()) {
-        return localIp;
-    }
-    AscendGdrbwThrowError("failed to resolve device NIC IP from HcclNetOpenDev/HcclNetDevGetLocalIp");
-    return localIp;
+    AscendGdrbwThrowError("failed to resolve device NIC IP from hrtRaGetDeviceIP");
+    return hccl::HcclIpAddress();
 }
 
 ibv_context* OpenNicContextByDeviceIp(const hccl::HcclIpAddress& deviceIp,

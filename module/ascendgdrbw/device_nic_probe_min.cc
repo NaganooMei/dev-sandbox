@@ -35,6 +35,7 @@
 #include <infiniband/verbs.h>
 
 #include "error_handle.h"
+#include "adapter_hccp_common.h"
 #include "externalinput_pub.h"
 #include "hccl_ip_address.h"
 #include "hccl_network_pub.h"
@@ -106,20 +107,33 @@ void PrintGid(const union ibv_gid& gid)
     }
 }
 
-hccl::HcclIpAddress ResolveDeviceIpWithNetdev(uint32_t devicePhyId, int32_t deviceLogicId)
+hccl::HcclIpAddress ResolveDeviceIp(uint32_t devicePhyId)
 {
-    HcclNetDevCtx netDevCtx = nullptr;
-    hccl::HcclIpAddress localIp;
-    ASCENDGDRBW_HCCL_ASSERT(HcclNetOpenDev(&netDevCtx, NicType::DEVICE_NIC_TYPE,
-                                           static_cast<int32_t>(devicePhyId), deviceLogicId,
-                                           hccl::HcclIpAddress(0)));
-    ASCENDGDRBW_HCCL_ASSERT(HcclNetDevGetLocalIp(netDevCtx, localIp));
-    std::fprintf(stderr,
-                 "[device-nic-probe] netdev_local_ip phy=%u logic=%d ip=%s family=%d invalid=%d\n",
-                 devicePhyId, deviceLogicId, localIp.GetReadableAddress(), localIp.GetFamily(),
-                 localIp.IsInvalid() ? 1 : 0);
-    HcclNetCloseDev(netDevCtx);
-    return localIp;
+    std::vector<hccl::HcclIpAddress> deviceIps;
+    ASCENDGDRBW_HCCL_ASSERT(hrtRaGetDeviceIP(devicePhyId, deviceIps));
+    std::fprintf(stderr, "[device-nic-probe] hrtRaGetDeviceIP success phy=%u candidates=%zu\n",
+                 devicePhyId, deviceIps.size());
+    for (size_t index = 0; index < deviceIps.size(); ++index) {
+        std::fprintf(stderr, "[device-nic-probe]   candidate[%zu]=%s family=%d invalid=%d\n", index,
+                     deviceIps[index].GetReadableAddress(), deviceIps[index].GetFamily(),
+                     deviceIps[index].IsInvalid() ? 1 : 0);
+    }
+    for (const auto& ip : deviceIps) {
+        if (!ip.IsInvalid() && !ip.IsIPv6()) {
+            std::fprintf(stderr, "[device-nic-probe] selected IPv4 device_ip=%s\n",
+                         ip.GetReadableAddress());
+            return ip;
+        }
+    }
+    for (const auto& ip : deviceIps) {
+        if (!ip.IsInvalid()) {
+            std::fprintf(stderr, "[device-nic-probe] selected fallback device_ip=%s\n",
+                         ip.GetReadableAddress());
+            return ip;
+        }
+    }
+    AscendGdrbwThrowError("hrtRaGetDeviceIP returned no valid device IP");
+    return hccl::HcclIpAddress();
 }
 
 void ProbeIbvDevices(const hccl::HcclIpAddress& targetIp, const std::string& nicHint)
@@ -222,7 +236,7 @@ int main(int argc, char** argv)
         netInitialized = true;
         std::fprintf(stderr, "[device-nic-probe] HcclNetInit success\n");
 
-        const hccl::HcclIpAddress deviceIp = ResolveDeviceIpWithNetdev(devicePhyId, deviceLogicId);
+        const hccl::HcclIpAddress deviceIp = ResolveDeviceIp(devicePhyId);
         ProbeIbvDevices(deviceIp, options.nicHint);
 
         std::fprintf(stderr, "[device-nic-probe] probe_finished success\n");
