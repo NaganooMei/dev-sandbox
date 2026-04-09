@@ -36,12 +36,16 @@
 
 #include "adapter_hccp.h"
 #include "adapter_hccp_common.h"
-#include "env_config.h"
 #include "error_handle.h"
 #include "externalinput_pub.h"
 #include "hccl_ip_address.h"
 #include "hccl_network_pub.h"
-#include "op_base.h"
+
+// Pull in only the specific hcomm APIs used here so this target does not
+// depend on the full env/op-base header stack and its runtime-private headers.
+HcclResult InitEnvConfig();
+HcclResult HcclDeviceRefresh(s32 &deviceLogicId);
+HcclResult hrtGetDevicePhyIdByIndex(u32 deviceLogicId, u32 &devicePhyId, bool isRefresh);
 
 namespace {
 
@@ -275,7 +279,7 @@ RDMAChannel::RDMAChannel(int32_t deviceId, std::string nicName, const RDMAChanne
     ASCENDGDRBW_HCCL_ASSERT(HcclDeviceRefresh(deviceLogicId_));
     ASCENDGDRBW_HCCL_ASSERT(InitExternalInput());
     ASCENDGDRBW_HCCL_ASSERT(InitEnvConfig());
-    ASCENDGDRBW_HCCL_ASSERT(hrtGetDevicePhyIdByIndex(static_cast<uint32_t>(deviceLogicId_), devicePhyId_));
+    ASCENDGDRBW_HCCL_ASSERT(hrtGetDevicePhyIdByIndex(static_cast<uint32_t>(deviceLogicId_), devicePhyId_, false));
     ASCENDGDRBW_HCCL_ASSERT(HcclNetInit(NICDeployment::NIC_DEPLOYMENT_DEVICE,
                                         static_cast<int32_t>(devicePhyId_), deviceLogicId_, false, false));
     netInitialized_ = true;
