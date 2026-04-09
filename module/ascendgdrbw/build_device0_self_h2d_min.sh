@@ -98,16 +98,32 @@ SET_ENV_REAL_PATH="$(find_set_env)" || {
     exit 1
 }
 
+resolve_root_from_set_env_dir() {
+    local base_dir="$1"
+    local candidates=(
+        "${base_dir}/aarch64-linux"
+        "${base_dir}"
+    )
+
+    local candidate
+    for candidate in "${candidates[@]}"; do
+        if [[ -f "${candidate}/include/acl/acl.h" && -f "${candidate}/lib64/libascendcl.so" ]]; then
+            echo "${candidate}"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 # shellcheck disable=SC1090
 source "${SET_ENV_REAL_PATH}"
 echo "Using CANN environment: ${SET_ENV_REAL_PATH}"
 
 if [[ -z "${ASCEND_ROOT_OVERRIDE}" ]]; then
     SET_ENV_DIR="$(cd "$(dirname "${SET_ENV_REAL_PATH}")" && pwd)"
-    if [[ -f "${SET_ENV_DIR}/lib64/cmake/ASCConfig.cmake" ]]; then
-        ASCEND_ROOT_OVERRIDE="${SET_ENV_DIR}"
-    elif [[ -f "${SET_ENV_DIR}/aarch64-linux/lib64/cmake/ASCConfig.cmake" ]]; then
-        ASCEND_ROOT_OVERRIDE="${SET_ENV_DIR}/aarch64-linux"
+    if ASCEND_ROOT_OVERRIDE="$(resolve_root_from_set_env_dir "${SET_ENV_DIR}")"; then
+        :
     else
         ASCEND_ROOT_OVERRIDE="$("${SCRIPT_DIR}/resolve_ascend_root.sh")"
     fi
