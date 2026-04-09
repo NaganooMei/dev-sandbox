@@ -13,7 +13,7 @@ find_library(C_SEC_LIB c_sec PATHS ${ASCEND_ROOT}/lib64 NO_DEFAULT_PATH)
 find_path(IBVERBS_INCLUDE_PATH infiniband/verbs.h PATHS /usr/include /usr/local/include)
 find_library(IBVERBS_LIB ibverbs)
 find_package(Threads REQUIRED)
-find_package(fmt REQUIRED)
+find_package(fmt QUIET)
 
 message(STATUS "ASCEND_ROOT=${ASCEND_ROOT}")
 message(STATUS "ASCEND_RUNTIME_API_PATH=${ASCEND_RUNTIME_API_PATH}")
@@ -24,30 +24,34 @@ message(STATUS "HCOMM_LIB=${HCOMM_LIB}")
 message(STATUS "C_SEC_LIB=${C_SEC_LIB}")
 
 if(ASCEND_RUNTIME_API_PATH AND ASCEND_RUNTIME_LIB AND HCCL_INCLUDE_PATH AND HCCL_LIB AND HCOMM_LIB AND C_SEC_LIB AND IBVERBS_INCLUDE_PATH AND IBVERBS_LIB)
-    add_executable(ascendgdrbw
-        ascendgdrbw.cc
-        rdma_channel.cc
-    )
-    target_include_directories(ascendgdrbw PRIVATE
-        ${ASCEND_RUNTIME_API_PATH}
-        ${HCCL_INCLUDE_PATH}
-        ${IBVERBS_INCLUDE_PATH}
-        ${HCOMM_SOURCE_ROOT}/pub_inc
-        ${HCOMM_SOURCE_ROOT}/pub_inc/inner
-        ${HCOMM_SOURCE_ROOT}/platform/inc
-        ${HCOMM_SOURCE_ROOT}/platform/inc/adapter
-        ${HCOMM_SOURCE_ROOT}/framework/op_base/src
-        ${HCOMM_SOURCE_ROOT}/framework/common/src/config
-    )
-    target_link_libraries(ascendgdrbw PRIVATE
-        fmt::fmt
-        ${ASCEND_RUNTIME_LIB}
-        ${HCCL_LIB}
-        ${HCOMM_LIB}
-        ${C_SEC_LIB}
-        ${IBVERBS_LIB}
-        Threads::Threads
-    )
+    if(TARGET fmt::fmt)
+        add_executable(ascendgdrbw
+            ascendgdrbw.cc
+            rdma_channel.cc
+        )
+        target_include_directories(ascendgdrbw PRIVATE
+            ${ASCEND_RUNTIME_API_PATH}
+            ${HCCL_INCLUDE_PATH}
+            ${IBVERBS_INCLUDE_PATH}
+            ${HCOMM_SOURCE_ROOT}/pub_inc
+            ${HCOMM_SOURCE_ROOT}/pub_inc/inner
+            ${HCOMM_SOURCE_ROOT}/platform/inc
+            ${HCOMM_SOURCE_ROOT}/platform/inc/adapter
+            ${HCOMM_SOURCE_ROOT}/framework/op_base/src
+            ${HCOMM_SOURCE_ROOT}/framework/common/src/config
+        )
+        target_link_libraries(ascendgdrbw PRIVATE
+            fmt::fmt
+            ${ASCEND_RUNTIME_LIB}
+            ${HCCL_LIB}
+            ${HCOMM_LIB}
+            ${C_SEC_LIB}
+            ${IBVERBS_LIB}
+            Threads::Threads
+        )
+    else()
+        message(WARNING "fmt was not found, skip target ascendgdrbw; ascendgdrbw_device0_self_h2d_min is still available")
+    endif()
 
     add_executable(ascendgdrbw_device0_self_h2d_min
         device0_self_h2d_min.cc
@@ -65,7 +69,6 @@ if(ASCEND_RUNTIME_API_PATH AND ASCEND_RUNTIME_LIB AND HCCL_INCLUDE_PATH AND HCCL
         ${HCOMM_SOURCE_ROOT}/framework/common/src/config
     )
     target_link_libraries(ascendgdrbw_device0_self_h2d_min PRIVATE
-        fmt::fmt
         ${ASCEND_RUNTIME_LIB}
         ${HCCL_LIB}
         ${HCOMM_LIB}

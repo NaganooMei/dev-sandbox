@@ -93,10 +93,6 @@ find_set_env() {
     return 1
 }
 
-if [[ -z "${ASCEND_ROOT_OVERRIDE}" ]]; then
-    ASCEND_ROOT_OVERRIDE="$("${SCRIPT_DIR}/resolve_ascend_root.sh")"
-fi
-
 SET_ENV_REAL_PATH="$(find_set_env)" || {
     echo "Failed to locate CANN set_env.sh. Pass it with --set-env PATH" >&2
     exit 1
@@ -105,6 +101,17 @@ SET_ENV_REAL_PATH="$(find_set_env)" || {
 # shellcheck disable=SC1090
 source "${SET_ENV_REAL_PATH}"
 echo "Using CANN environment: ${SET_ENV_REAL_PATH}"
+
+if [[ -z "${ASCEND_ROOT_OVERRIDE}" ]]; then
+    SET_ENV_DIR="$(cd "$(dirname "${SET_ENV_REAL_PATH}")" && pwd)"
+    if [[ -f "${SET_ENV_DIR}/lib64/cmake/ASCConfig.cmake" ]]; then
+        ASCEND_ROOT_OVERRIDE="${SET_ENV_DIR}"
+    elif [[ -f "${SET_ENV_DIR}/aarch64-linux/lib64/cmake/ASCConfig.cmake" ]]; then
+        ASCEND_ROOT_OVERRIDE="${SET_ENV_DIR}/aarch64-linux"
+    else
+        ASCEND_ROOT_OVERRIDE="$("${SCRIPT_DIR}/resolve_ascend_root.sh")"
+    fi
+fi
 echo "Using ASCEND_ROOT: ${ASCEND_ROOT_OVERRIDE}"
 
 export HCCL_INTRA_ROCE_ENABLE="${HCCL_INTRA_ROCE_ENABLE:-1}"
