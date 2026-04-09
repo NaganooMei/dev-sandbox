@@ -29,6 +29,12 @@ try_candidate_root() {
         return 0
     fi
 
+    if [ -f "${root}/aarch64-linux/lib64/cmake/ASCConfig.cmake" ] && \
+       [ -f "${root}/aarch64-linux/lib64/cmake/AICPUConfig.cmake" ]; then
+        echo "${root}/aarch64-linux"
+        return 0
+    fi
+
     return 1
 }
 
@@ -49,6 +55,23 @@ if [ -n "${ASCEND_TOOLKIT_HOME:-}" ]; then
         exit 0
     fi
 fi
+
+if [ -n "${ASCEND_CANN_PACKAGE_PATH:-}" ]; then
+    if try_candidate_root "${ASCEND_CANN_PACKAGE_PATH}"; then
+        exit 0
+    fi
+fi
+
+for preferred_root in \
+    "/usr/local/Ascend/cann-9.0.0" \
+    "/usr/local/Ascend/cann-9.0.0/aarch64-linux" \
+    "/usr/local/Ascend/ascend-toolkit/latest" \
+    "/usr/local/Ascend/ascend-toolkit" \
+    "/usr/local/Ascend/cann"; do
+    if try_candidate_root "${preferred_root}"; then
+        exit 0
+    fi
+done
 
 while IFS= read -r config_path; do
     if pick_root_from_config "${config_path}"; then

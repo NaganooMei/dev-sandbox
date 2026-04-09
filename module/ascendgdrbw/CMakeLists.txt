@@ -1,4 +1,7 @@
-set(ASCEND_ROOT "/usr/local/Ascend/ascend-toolkit/latest" CACHE PATH "Path to Ascend root directory")
+cmake_minimum_required(VERSION 3.16)
+project(ascendgdrbw LANGUAGES C CXX)
+
+set(ASCEND_ROOT "/usr/local/Ascend/cann-9.0.0/aarch64-linux" CACHE PATH "Path to Ascend root directory")
 set(WORKSPACE_ROOT ${CMAKE_CURRENT_LIST_DIR}/../../..)
 set(HCOMM_SOURCE_ROOT ${WORKSPACE_ROOT}/hcomm/src)
 find_path(ASCEND_RUNTIME_API_PATH acl/acl.h PATHS ${ASCEND_ROOT}/include NO_DEFAULT_PATH)
@@ -10,6 +13,7 @@ find_library(C_SEC_LIB c_sec PATHS ${ASCEND_ROOT}/lib64 NO_DEFAULT_PATH)
 find_path(IBVERBS_INCLUDE_PATH infiniband/verbs.h PATHS /usr/include /usr/local/include)
 find_library(IBVERBS_LIB ibverbs)
 find_package(Threads REQUIRED)
+find_package(fmt REQUIRED)
 
 message(STATUS "ASCEND_ROOT=${ASCEND_ROOT}")
 message(STATUS "ASCEND_RUNTIME_API_PATH=${ASCEND_RUNTIME_API_PATH}")

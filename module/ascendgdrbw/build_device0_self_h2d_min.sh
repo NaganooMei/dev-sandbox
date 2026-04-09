@@ -62,12 +62,21 @@ find_set_env() {
     if [[ -n "${SET_ENV_PATH}" ]]; then
         candidates+=("${SET_ENV_PATH}")
     fi
+    if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
+        candidates+=("${ASCEND_HOME_PATH}/set_env.sh")
+        candidates+=("${ASCEND_HOME_PATH}/aarch64-linux/set_env.sh")
+    fi
+    if [[ -n "${ASCEND_TOOLKIT_HOME:-}" ]]; then
+        candidates+=("${ASCEND_TOOLKIT_HOME}/set_env.sh")
+    fi
     if [[ -n "${ASCEND_CANN_PACKAGE_PATH:-}" ]]; then
         candidates+=("${ASCEND_CANN_PACKAGE_PATH}/set_env.sh")
     fi
     candidates+=(
-        "/usr/local/Ascend/ascend-toolkit/set_env.sh"
+        "/usr/local/Ascend/cann-9.0.0/set_env.sh"
+        "/usr/local/Ascend/cann-9.0.0/aarch64-linux/set_env.sh"
         "/usr/local/Ascend/ascend-toolkit/latest/set_env.sh"
+        "/usr/local/Ascend/ascend-toolkit/set_env.sh"
         "/usr/local/Ascend/cann/set_env.sh"
         "${HOME}/Ascend/ascend-toolkit/set_env.sh"
         "${HOME}/Ascend/ascend-toolkit/latest/set_env.sh"
