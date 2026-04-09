@@ -1,6 +1,7 @@
 #include <acl/acl.h>
 
 #include <chrono>
+#include <cerrno>
 #include <cstdarg>
 #include <cstdlib>
 #include <cstdint>
@@ -154,12 +155,11 @@ int main(int argc, char** argv)
 
         currentStep = "alloc_host_buffer";
         LogStep(currentStep, "begin", "bytes=%zu", options.bytes);
-        const aclError mallocHostRc = aclrtMallocHost(&hostBuffer, options.bytes);
-        if (mallocHostRc != ACL_SUCCESS) {
-            LogStep(currentStep, "failed", "rc=%d msg=%s", static_cast<int>(mallocHostRc),
-                    aclGetRecentErrMsg());
+        hostBuffer = std::malloc(options.bytes);
+        if (hostBuffer == nullptr) {
+            LogStep(currentStep, "failed", "errno=%d(%s)", errno, std::strerror(errno));
         }
-        ASCENDGDRBW_ASCEND_ASSERT(mallocHostRc);
+        ASCENDGDRBW_ERRNO_ASSERT(hostBuffer != nullptr);
         LogStep(currentStep, "success", "buffer=%p bytes=%zu", hostBuffer, options.bytes);
 
         currentStep = "alloc_device_buffer";
@@ -293,7 +293,7 @@ int main(int argc, char** argv)
     }
     if (hostBuffer != nullptr) {
         LogStep("cleanup_host_buffer", "begin", "buffer=%p", hostBuffer);
-        (void)aclrtFreeHost(hostBuffer);
+        std::free(hostBuffer);
         LogStep("cleanup_host_buffer", "success");
     }
     if (deviceSet) {

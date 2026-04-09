@@ -26,6 +26,7 @@
 
 #include <infiniband/verbs.h>
 
+#include <cstdlib>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -118,18 +119,15 @@ public:
     AscendHostMemoryBuffer(int32_t deviceId, size_t size, size_t number)
         : MemoryBuffer(deviceId, size, number)
     {
-        ASCENDGDRBW_ASCEND_ASSERT(aclrtSetDevice(deviceId_));
-        ASCENDGDRBW_ASCEND_ASSERT(aclrtMallocHost(&buffer_, TotalBytes()));
+        buffer_ = std::malloc(TotalBytes());
+        ASCENDGDRBW_ERRNO_ASSERT(buffer_ != nullptr);
         RegisterHostMemoryForAllChannels();
     }
 
     ~AscendHostMemoryBuffer() override
     {
         ReleaseMemoryRegions();
-        if (buffer_ != nullptr) {
-            (void)aclrtSetDevice(deviceId_);
-            (void)aclrtFreeHost(buffer_);
-        }
+        if (buffer_ != nullptr) { std::free(buffer_); }
     }
 
     std::string ReadMe() const override { return "AscendHostMemoryBuffer"; }
