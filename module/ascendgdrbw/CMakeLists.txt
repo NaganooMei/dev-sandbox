@@ -44,5 +44,30 @@ if(ASCEND_RUNTIME_API_PATH AND ASCEND_RUNTIME_LIB AND HCCL_INCLUDE_PATH AND HCCL
         ${IBVERBS_LIB}
         Threads::Threads
     )
+
+    add_executable(ascendgdrbw_device0_self_h2d_min
+        device0_self_h2d_min.cc
+        rdma_channel.cc
+    )
+    target_include_directories(ascendgdrbw_device0_self_h2d_min PRIVATE
+        ${ASCEND_RUNTIME_API_PATH}
+        ${HCCL_INCLUDE_PATH}
+        ${IBVERBS_INCLUDE_PATH}
+        ${HCOMM_SOURCE_ROOT}/pub_inc
+        ${HCOMM_SOURCE_ROOT}/pub_inc/inner
+        ${HCOMM_SOURCE_ROOT}/platform/inc
+        ${HCOMM_SOURCE_ROOT}/platform/inc/adapter
+        ${HCOMM_SOURCE_ROOT}/framework/op_base/src
+        ${HCOMM_SOURCE_ROOT}/framework/common/src/config
+    )
+    target_link_libraries(ascendgdrbw_device0_self_h2d_min PRIVATE
+        fmt::fmt
+        ${ASCEND_RUNTIME_LIB}
+        ${HCCL_LIB}
+        ${HCOMM_LIB}
+        ${C_SEC_LIB}
+        ${IBVERBS_LIB}
+        Threads::Threads
+    )
 endif()
 

@@ -44,6 +44,14 @@ struct MemoryRegistration {
     void* mrHandle = nullptr;
     uint32_t lkey = 0;
     uint32_t rkey = 0;
+
+    const char* BackendName() const noexcept
+    {
+        return backend == Backend::Ibverbs ? "ibverbs" : "ra_global_mr";
+    }
+
+    bool IsIbverbs() const noexcept { return backend == Backend::Ibverbs; }
+    bool IsRaGlobal() const noexcept { return backend == Backend::RaGlobal; }
 };
 
 struct RDMAChannelConfig {
@@ -70,9 +78,13 @@ public:
     void Wait(uint64_t targetWorkRequestId);
 
     int32_t DeviceId() const noexcept { return deviceId_; }
+    int32_t DeviceLogicId() const noexcept { return deviceLogicId_; }
+    uint32_t DevicePhyId() const noexcept { return devicePhyId_; }
     const std::string& NicName() const noexcept { return nicName_; }
     const std::string& ResolvedIbvDeviceName() const noexcept { return resolvedIbvDeviceName_; }
     const std::string& ResolvedDeviceIp() const noexcept { return resolvedDeviceIp_; }
+    int GidIndex() const noexcept { return gidIndex_; }
+    bool UsedNameFallback() const noexcept { return usedNameFallback_; }
 
 private:
     void PollOneCompletion();
@@ -89,6 +101,7 @@ private:
     std::string resolvedDeviceIp_;
     void* rdmaHandle_ = nullptr;
     bool netInitialized_ = false;
+    bool usedNameFallback_ = false;
     int gidIndex_ = 0;
     uint64_t nextWorkRequestId_ = 1;
     uint64_t completedWorkRequestId_ = 0;

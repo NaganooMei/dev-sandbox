@@ -77,13 +77,24 @@ hccl::HcclIpAddress ResolveDeviceIp(uint32_t devicePhyId)
 {
     std::vector<hccl::HcclIpAddress> deviceIps;
     ASCENDGDRBW_HCCL_ASSERT(hrtRaGetDeviceIP(devicePhyId, deviceIps));
+    std::fprintf(stderr, "[ascendgdrbw] ResolveDeviceIp: phy=%u candidates=%zu\n",
+                 devicePhyId, deviceIps.size());
+    for (size_t index = 0; index < deviceIps.size(); ++index) {
+        std::fprintf(stderr, "[ascendgdrbw]   candidate[%zu]=%s family=%d invalid=%d\n", index,
+                     deviceIps[index].GetReadableAddress(), deviceIps[index].GetFamily(),
+                     deviceIps[index].IsInvalid() ? 1 : 0);
+    }
     for (const auto& ip : deviceIps) {
         if (!ip.IsInvalid() && !ip.IsIPv6()) {
+            std::fprintf(stderr, "[ascendgdrbw] ResolveDeviceIp select IPv4=%s\n",
+                         ip.GetReadableAddress());
             return ip;
         }
     }
     for (const auto& ip : deviceIps) {
         if (!ip.IsInvalid()) {
+            std::fprintf(stderr, "[ascendgdrbw] ResolveDeviceIp select fallback=%s\n",
+                         ip.GetReadableAddress());
             return ip;
         }
     }
@@ -101,8 +112,12 @@ ibv_context* OpenNicContextByDeviceIp(const hccl::HcclIpAddress& deviceIp,
 
     ibv_context* matchedContext = nullptr;
     for (int index = 0; index < deviceCount; ++index) {
+        std::fprintf(stderr, "[ascendgdrbw] Probe ibv device[%d]=%s for device_ip=%s\n", index,
+                     ibv_get_device_name(deviceList[index]), deviceIp.GetReadableAddress());
         ibv_context* context = ibv_open_device(deviceList[index]);
         if (context == nullptr) {
+            std::fprintf(stderr, "[ascendgdrbw]   open failed errno=%d(%s)\n", errno,
+                         std::strerror(errno));
             continue;
         }
 
@@ -129,6 +144,9 @@ ibv_context* OpenNicContextByDeviceIp(const hccl::HcclIpAddress& deviceIp,
             matchedContext = context;
             gidIndex = matchedGidIndex;
             resolvedIbvDeviceName = ibv_get_device_name(deviceList[index]);
+            std::fprintf(stderr,
+                         "[ascendgdrbw]   matched ibv device=%s gid_index=%d for device_ip=%s\n",
+                         resolvedIbvDeviceName.c_str(), gidIndex, deviceIp.GetReadableAddress());
             break;
         }
 
@@ -249,6 +267,9 @@ RDMAChannel::RDMAChannel(int32_t deviceId, std::string nicName, const RDMAChanne
     ASCENDGDRBW_HCCL_ASSERT(HcclNetInit(NICDeployment::NIC_DEPLOYMENT_DEVICE,
                                         static_cast<int32_t>(devicePhyId_), deviceLogicId_, false, false));
     netInitialized_ = true;
+    std::fprintf(stderr,
+                 "[ascendgdrbw] HcclNetInit success: device=%d logic=%d phy=%u requested_nic=%s\n",
+                 deviceId_, deviceLogicId_, devicePhyId_, nicName_.c_str());
 
     ASCENDGDRBW_ASSERT(config.cqDepth > 0);
     ASCENDGDRBW_ASSERT(config.qpSendWr > 0);
@@ -258,14 +279,21 @@ RDMAChannel::RDMAChannel(int32_t deviceId, std::string nicName, const RDMAChanne
     resolvedDeviceIp_ = bindIp.GetReadableAddress();
     try {
         context_ = OpenNicContextByDeviceIp(bindIp, resolvedIbvDeviceName_, gidIndex_);
-    } catch (const std::exception&) {
+    } catch (const std::exception& ex) {
         context_ = OpenNicContextByName(nicName_);
         resolvedIbvDeviceName_ = nicName_;
         gidIndex_ = 0;
+        usedNameFallback_ = true;
+        std::fprintf(stderr,
+                     "[ascendgdrbw] fallback to nic name: reason=%s requested_nic=%s resolved_ibv=%s gid_index=%d\n",
+                     ex.what(), nicName_.c_str(), resolvedIbvDeviceName_.c_str(), gidIndex_);
     }
     ASCENDGDRBW_ASSERT(context_ != nullptr);
     ASCENDGDRBW_HCCL_ASSERT(HrtRaRdmaGetHandle(devicePhyId_, rdmaHandle_));
     ASCENDGDRBW_ASSERT(rdmaHandle_ != nullptr);
+    std::fprintf(stderr,
+                 "[ascendgdrbw] HrtRaRdmaGetHandle success: device=%d phy=%u rdmaHandle=%p\n",
+                 deviceId_, devicePhyId_, rdmaHandle_);
 
     protectionDomain_ = ibv_alloc_pd(context_);
     ASCENDGDRBW_ASSERT(protectionDomain_ != nullptr);
@@ -330,7 +358,7 @@ MemoryRegistration* RDMAChannel::RegisterHostMemory(void* buffer, size_t bytes)
     ASCENDGDRBW_ASSERT(buffer != nullptr);
     ASCENDGDRBW_ASSERT(bytes > 0);
     std::fprintf(stderr,
-                 "[ascendgdrbw] RegisterHostMemory begin: nic=%s device=%d pd=%p buffer=%p "
+                 "[ascendgdrbw] RegisterHostMemory begin: backend=ibverbs nic=%s device=%d pd=%p buffer=%p "
                  "bytes=%zu flags=0x%x\n",
                  nicName_.c_str(), deviceId_, static_cast<void*>(protectionDomain_), buffer, bytes,
                  IBV_ACCESS_LOCAL_WRITE);
@@ -343,7 +371,7 @@ MemoryRegistration* RDMAChannel::RegisterHostMemory(void* buffer, size_t bytes)
                      bytes, errno, std::strerror(errno));
     } else {
         std::fprintf(stderr,
-                     "[ascendgdrbw] RegisterHostMemory success: nic=%s device=%d mr=%p lkey=%u "
+                     "[ascendgdrbw] RegisterHostMemory success: backend=ibverbs nic=%s device=%d mr=%p lkey=%u "
                      "rkey=%u\n",
                      nicName_.c_str(), deviceId_, static_cast<void*>(memoryRegion),
                      memoryRegion->lkey, memoryRegion->rkey);
@@ -364,7 +392,7 @@ MemoryRegistration* RDMAChannel::RegisterDeviceMemory(void* buffer, size_t bytes
     ASCENDGDRBW_ASSERT(bytes > 0);
     ASCENDGDRBW_ASCEND_ASSERT(aclrtSetDevice(deviceId_));
     std::fprintf(stderr,
-                 "[ascendgdrbw] RegisterDeviceMemory begin: requested_nic=%s resolved_ibv=%s "
+                 "[ascendgdrbw] RegisterDeviceMemory begin: backend=ra_global_mr requested_nic=%s resolved_ibv=%s "
                  "device=%d phy=%u rdmaHandle=%p buffer=%p bytes=%zu\n",
                  nicName_.c_str(), resolvedIbvDeviceName_.c_str(), deviceId_, devicePhyId_,
                  rdmaHandle_, buffer, bytes);
@@ -383,7 +411,7 @@ MemoryRegistration* RDMAChannel::RegisterDeviceMemory(void* buffer, size_t bytes
                      bytes, static_cast<int>(ret));
     } else {
         std::fprintf(stderr,
-                     "[ascendgdrbw] RegisterDeviceMemory success: requested_nic=%s resolved_ibv=%s "
+                     "[ascendgdrbw] RegisterDeviceMemory success: backend=ra_global_mr requested_nic=%s resolved_ibv=%s "
                      "device=%d mrHandle=%p lkey=%u rkey=%u\n",
                      nicName_.c_str(), resolvedIbvDeviceName_.c_str(), deviceId_, mrHandle,
                      info.lkey, info.rkey);
