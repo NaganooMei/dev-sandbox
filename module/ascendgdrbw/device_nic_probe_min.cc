@@ -51,6 +51,7 @@ constexpr int kIbvPort = 1;
 struct Options {
     int32_t deviceId = 0;
     std::string nicHint = "mlx5_0";
+    std::string targetIp;
 };
 
 void CheckHccl(HcclResult ret, const char* expr)
@@ -69,7 +70,7 @@ Options ParseOptions(int argc, char** argv)
     for (int index = 1; index < argc; ++index) {
         const std::string arg(argv[index]);
         if (arg == "--help" || arg == "-h") {
-            std::fprintf(stderr, "Usage: %s [--device=N] [--nic=NAME]\n", argv[0]);
+            std::fprintf(stderr, "Usage: %s [--device=N] [--nic=NAME] [--ip=A.B.C.D]\n", argv[0]);
             std::exit(0);
         }
         if (arg.find("--device=") == 0U) {
@@ -78,6 +79,10 @@ Options ParseOptions(int argc, char** argv)
         }
         if (arg.find("--nic=") == 0U) {
             options.nicHint = arg.substr(std::strlen("--nic="));
+            continue;
+        }
+        if (arg.find("--ip=") == 0U) {
+            options.targetIp = arg.substr(std::strlen("--ip="));
             continue;
         }
         AscendGdrbwThrowError("unknown argument: " + arg);
@@ -215,6 +220,14 @@ int main(int argc, char** argv)
 
     try {
         options = ParseOptions(argc, argv);
+        const bool hasTargetIp = !options.targetIp.empty();
+        hccl::HcclIpAddress manualTargetIp;
+        if (hasTargetIp) {
+            ASCENDGDRBW_HCCL_ASSERT(manualTargetIp.SetReadableAddress(options.targetIp));
+            ASCENDGDRBW_ASSERT(!manualTargetIp.IsInvalid());
+            std::fprintf(stderr, "[device-nic-probe] manual_target_ip=%s family=%d\n",
+                         manualTargetIp.GetReadableAddress(), manualTargetIp.GetFamily());
+        }
 
         ASCENDGDRBW_ASCEND_ASSERT(aclInit(nullptr));
         aclInitialized = true;
@@ -236,7 +249,7 @@ int main(int argc, char** argv)
         netInitialized = true;
         std::fprintf(stderr, "[device-nic-probe] HcclNetInit success\n");
 
-        const hccl::HcclIpAddress deviceIp = ResolveDeviceIp(devicePhyId);
+        const hccl::HcclIpAddress deviceIp = hasTargetIp ? manualTargetIp : ResolveDeviceIp(devicePhyId);
         ProbeIbvDevices(deviceIp, options.nicHint);
 
         std::fprintf(stderr, "[device-nic-probe] probe_finished success\n");

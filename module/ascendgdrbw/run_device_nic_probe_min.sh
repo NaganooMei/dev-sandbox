@@ -7,6 +7,7 @@ BUILD_DIR="${SCRIPT_DIR}/build"
 TARGET="ascendgdrbw_device_nic_probe_min"
 DEVICE_ID=0
 NIC_NAME="mlx5_0"
+TARGET_IP=""
 BUILD_ONLY=0
 RUN_ONLY=0
 BUILD_ARGS=()
@@ -18,6 +19,7 @@ Usage: $(basename "$0") [options]
 Run options:
   --device N        Device id, default: ${DEVICE_ID}
   --nic NAME        NIC hint, default: ${NIC_NAME}
+  --ip A.B.C.D      Explicit device IP; bypass hrtRaGetDeviceIP when provided
   --build-only      Only build
   --run-only        Only run existing binary
 
@@ -40,6 +42,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --nic)
             NIC_NAME="$2"
+            shift 2
+            ;;
+        --ip)
+            TARGET_IP="$2"
             shift 2
             ;;
         --build-only)
@@ -97,4 +103,5 @@ fi
 
 exec "${BIN_PATH}" \
     --device="${DEVICE_ID}" \
-    --nic="${NIC_NAME}"
+    --nic="${NIC_NAME}" \
+    $([[ -n "${TARGET_IP}" ]] && printf '%s' "--ip=${TARGET_IP}")

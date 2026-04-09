@@ -34,12 +34,15 @@
 
 #include <infiniband/verbs.h>
 
+#include "hccl_ip_address.h"
+
 namespace {
 
 constexpr int kIbvPort = 1;
 
 struct Options {
     std::string nicHint = "mlx5_0";
+    std::string targetIp;
 };
 
 [[noreturn]] void ThrowError(const std::string& message)
@@ -76,16 +79,31 @@ Options ParseOptions(int argc, char** argv)
     for (int index = 1; index < argc; ++index) {
         const std::string arg(argv[index]);
         if (arg == "--help" || arg == "-h") {
-            std::fprintf(stderr, "Usage: %s [--nic=NAME]\n", argv[0]);
+            std::fprintf(stderr, "Usage: %s [--nic=NAME] [--ip=A.B.C.D]\n", argv[0]);
             std::exit(0);
         }
         if (arg.find("--nic=") == 0U) {
             options.nicHint = arg.substr(std::strlen("--nic="));
             continue;
         }
+        if (arg.find("--ip=") == 0U) {
+            options.targetIp = arg.substr(std::strlen("--ip="));
+            continue;
+        }
         ThrowError("unknown argument: " + arg);
     }
     return options;
+}
+
+bool CompareIpAndGid(const hccl::HcclIpAddress& localIp, const union ibv_gid& gid)
+{
+    if (localIp.GetFamily() == AF_INET6) {
+        const auto binary = localIp.GetBinaryAddress();
+        return std::memcmp(&gid, &binary.addr6, sizeof(gid)) == 0;
+    }
+
+    uint32_t gidV4[4] = {0, 0, htonl(0x0000FFFF), localIp.GetBinaryAddress().addr.s_addr};
+    return std::memcmp(&gid, gidV4, sizeof(gid)) == 0;
 }
 
 void PrintGid(const union ibv_gid& gid)
@@ -105,12 +123,22 @@ int main(int argc, char** argv)
 {
     try {
         const Options options = ParseOptions(argc, argv);
+        const bool hasTargetIp = !options.targetIp.empty();
+        hccl::HcclIpAddress targetIp;
+        if (hasTargetIp) {
+            IBV_PROBE_ASSERT(targetIp.SetReadableAddress(options.targetIp) == HCCL_SUCCESS);
+            IBV_PROBE_ASSERT(!targetIp.IsInvalid());
+            std::fprintf(stderr, "[ibv-nic-probe] target_ip=%s family=%d\n",
+                         targetIp.GetReadableAddress(), targetIp.GetFamily());
+        }
 
         int deviceCount = 0;
         ibv_device** deviceList = ibv_get_device_list(&deviceCount);
         IBV_PROBE_ASSERT(deviceList != nullptr);
-        std::fprintf(stderr, "[ibv-nic-probe] ibv_get_device_list success count=%d nic_hint=%s\n",
-                     deviceCount, options.nicHint.c_str());
+        std::fprintf(stderr,
+                     "[ibv-nic-probe] ibv_get_device_list success count=%d nic_hint=%s target_ip=%s\n",
+                     deviceCount, options.nicHint.c_str(),
+                     hasTargetIp ? targetIp.GetReadableAddress() : "<none>");
 
         for (int index = 0; index < deviceCount; ++index) {
             const char* deviceName = ibv_get_device_name(deviceList[index]);
@@ -139,6 +167,7 @@ int main(int argc, char** argv)
                          portAttr.lid, static_cast<int>(portAttr.active_mtu), portAttr.gid_tbl_len,
                          portAttr.lid == 0 ? 1 : 0);
 
+            bool matched = false;
             for (int gidIndex = 0; gidIndex < portAttr.gid_tbl_len; ++gidIndex) {
                 union ibv_gid gid = {};
                 const int gidRet = ibv_query_gid(context, kIbvPort, gidIndex, &gid);
@@ -149,9 +178,17 @@ int main(int argc, char** argv)
                     continue;
                 }
 
-                std::fprintf(stderr, "[ibv-nic-probe]   gid[%d] value=", gidIndex);
+                const bool ipMatched = hasTargetIp ? CompareIpAndGid(targetIp, gid) : false;
+                matched = matched || ipMatched;
+                std::fprintf(stderr, "[ibv-nic-probe]   gid[%d] match=%d value=", gidIndex,
+                             ipMatched ? 1 : 0);
                 PrintGid(gid);
                 std::fprintf(stderr, "\n");
+            }
+
+            if (hasTargetIp) {
+                std::fprintf(stderr, "[ibv-nic-probe]   summary device=%s matched=%d\n", deviceName,
+                             matched ? 1 : 0);
             }
 
             (void)ibv_close_device(context);

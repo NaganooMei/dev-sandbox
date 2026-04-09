@@ -6,6 +6,7 @@ BUILD_SCRIPT="${SCRIPT_DIR}/build_ibv_nic_probe_min.sh"
 BUILD_DIR="${SCRIPT_DIR}/build"
 TARGET="ascendgdrbw_ibv_nic_probe_min"
 NIC_NAME="mlx5_0"
+TARGET_IP=""
 BUILD_ONLY=0
 RUN_ONLY=0
 BUILD_ARGS=()
@@ -16,6 +17,7 @@ Usage: $(basename "$0") [options]
 
 Run options:
   --nic NAME        NIC hint, default: ${NIC_NAME}
+  --ip A.B.C.D      Explicit device IP to match against ibv GIDs
   --build-only      Only build
   --run-only        Only run existing binary
 
@@ -33,6 +35,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --nic)
             NIC_NAME="$2"
+            shift 2
+            ;;
+        --ip)
+            TARGET_IP="$2"
             shift 2
             ;;
         --build-only)
@@ -88,4 +94,6 @@ if [[ ! -x "${BIN_PATH}" ]]; then
     exit 1
 fi
 
-exec "${BIN_PATH}" --nic="${NIC_NAME}"
+exec "${BIN_PATH}" \
+    --nic="${NIC_NAME}" \
+    $([[ -n "${TARGET_IP}" ]] && printf '%s' "--ip=${TARGET_IP}")
