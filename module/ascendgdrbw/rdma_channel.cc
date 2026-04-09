@@ -45,7 +45,7 @@
 // depend on the full env/op-base header stack and its runtime-private headers.
 HcclResult InitEnvConfig();
 HcclResult HcclDeviceRefresh(s32 &deviceLogicId);
-HcclResult hrtGetDevicePhyIdByIndex(u32 deviceLogicId, u32 &devicePhyId, bool isRefresh);
+extern "C" HcclResult hrtGetDevicePhyIdByIndex(u32 deviceLogicId, u32 &devicePhyId, bool isRefresh);
 
 namespace {
 
