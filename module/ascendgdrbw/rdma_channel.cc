@@ -29,6 +29,7 @@
 #include <arpa/inet.h>
 #include <cstdlib>
 #include <exception>
+#include <new>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -92,8 +93,21 @@ bool CompareIpAndGid(const hccl::HcclIpAddress& localIp, const union ibv_gid& gi
 hccl::HcclIpAddress ResolveDeviceIp(uint32_t devicePhyId)
 {
     std::vector<hccl::HcclIpAddress> deviceIps;
-    ASCENDGDRBW_HCCL_ASSERT(hrtRaGetDeviceIP(devicePhyId, deviceIps));
-    std::fprintf(stderr, "[ascendgdrbw] ResolveDeviceIp: phy=%u candidates=%zu\n",
+    std::fprintf(stderr, "[ascendgdrbw] ResolveDeviceIp begin: phy=%u\n", devicePhyId);
+    try {
+        ASCENDGDRBW_HCCL_ASSERT(hrtRaGetDeviceIP(devicePhyId, deviceIps));
+    } catch (const std::bad_alloc& ex) {
+        std::fprintf(stderr,
+                     "[ascendgdrbw] ResolveDeviceIp bad_alloc during hrtRaGetDeviceIP: phy=%u what=%s\n",
+                     devicePhyId, ex.what());
+        throw;
+    } catch (const std::exception& ex) {
+        std::fprintf(stderr,
+                     "[ascendgdrbw] ResolveDeviceIp exception during hrtRaGetDeviceIP: phy=%u what=%s\n",
+                     devicePhyId, ex.what());
+        throw;
+    }
+    std::fprintf(stderr, "[ascendgdrbw] ResolveDeviceIp after hrtRaGetDeviceIP: phy=%u candidates=%zu\n",
                  devicePhyId, deviceIps.size());
     for (size_t index = 0; index < deviceIps.size(); ++index) {
         std::fprintf(stderr, "[ascendgdrbw]   candidate[%zu]=%s family=%d invalid=%d\n", index,
@@ -291,8 +305,28 @@ RDMAChannel::RDMAChannel(int32_t deviceId, std::string nicName, const RDMAChanne
     ASCENDGDRBW_ASSERT(config.qpSendWr > 0);
     ASCENDGDRBW_ASSERT(config.qpRecvWr > 0);
 
-    hccl::HcclIpAddress bindIp = ResolveDeviceIp(devicePhyId_);
-    resolvedDeviceIp_ = bindIp.GetReadableAddress();
+    std::fprintf(stderr,
+                 "[ascendgdrbw] About to resolve device IP: device=%d logic=%d phy=%u requested_nic=%s\n",
+                 deviceId_, deviceLogicId_, devicePhyId_, nicName_.c_str());
+    hccl::HcclIpAddress bindIp;
+    try {
+        bindIp = ResolveDeviceIp(devicePhyId_);
+    } catch (const std::bad_alloc& ex) {
+        std::fprintf(stderr,
+                     "[ascendgdrbw] bad_alloc while resolving device IP: device=%d logic=%d phy=%u what=%s\n",
+                     deviceId_, deviceLogicId_, devicePhyId_, ex.what());
+        throw;
+    }
+    try {
+        resolvedDeviceIp_ = bindIp.GetReadableAddress();
+    } catch (const std::bad_alloc& ex) {
+        std::fprintf(stderr,
+                     "[ascendgdrbw] bad_alloc while storing resolved device IP: device=%d logic=%d phy=%u bind_ip=%s what=%s\n",
+                     deviceId_, deviceLogicId_, devicePhyId_, bindIp.GetReadableAddress(), ex.what());
+        throw;
+    }
+    std::fprintf(stderr, "[ascendgdrbw] Device IP resolved: phy=%u ip=%s\n",
+                 devicePhyId_, resolvedDeviceIp_.c_str());
     try {
         context_ = OpenNicContextByDeviceIp(bindIp, resolvedIbvDeviceName_, gidIndex_);
     } catch (const std::exception& ex) {
