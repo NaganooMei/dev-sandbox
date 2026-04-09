@@ -122,6 +122,17 @@ set(ASCENDGDRBW_COMMON_INCLUDE_DIRS
 )
 
 if(ASCEND_RUNTIME_API_PATH AND ASCEND_RUNTIME_LIB AND HCCL_INCLUDE_PATH AND HCCL_PKG_INCLUDE_PATH AND HCCL_LIB AND HCOMM_LIB AND HCCL_PLF_LIB AND C_SEC_LIB AND IBVERBS_INCLUDE_PATH AND IBVERBS_LIB)
+    add_executable(ascendgdrbw_ibv_nic_probe_min
+        ibv_nic_probe_min.cc
+    )
+    target_include_directories(ascendgdrbw_ibv_nic_probe_min PRIVATE
+        ${IBVERBS_INCLUDE_PATH}
+    )
+    target_link_libraries(ascendgdrbw_ibv_nic_probe_min PRIVATE
+        ${IBVERBS_LIB}
+        Threads::Threads
+    )
+
     if(TARGET fmt::fmt)
         add_executable(ascendgdrbw
             ascendgdrbw.cc
