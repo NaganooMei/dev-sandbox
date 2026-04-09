@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <arpa/inet.h>
+#include <cstdlib>
 #include <exception>
 #include <cstdio>
 #include <cstring>
@@ -61,6 +62,17 @@ void CheckHccl(HcclResult ret, const char* expr)
 }
 
 #define ASCENDGDRBW_HCCL_ASSERT(expr) CheckHccl((expr), #expr)
+
+bool IsDirectDeviceIbvRegDisabledByEnv()
+{
+    const char* value = std::getenv("ASCENDGDRBW_DISABLE_DIRECT_DEVICE_IBV_REG");
+    if (value == nullptr) {
+        return false;
+    }
+    return std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 ||
+           std::strcmp(value, "TRUE") == 0 || std::strcmp(value, "on") == 0 ||
+           std::strcmp(value, "ON") == 0;
+}
 
 bool CompareIpAndGid(const hccl::HcclIpAddress& localIp, const union ibv_gid& gid)
 {
@@ -383,6 +395,7 @@ MemoryRegistration* RDMAChannel::RegisterHostMemory(void* buffer, size_t bytes)
     registration->ibvMemoryRegion = memoryRegion;
     registration->lkey = memoryRegion->lkey;
     registration->rkey = memoryRegion->rkey;
+    registration->backendTag = "ibverbs_host";
     return registration;
 }
 
@@ -391,11 +404,61 @@ MemoryRegistration* RDMAChannel::RegisterDeviceMemory(void* buffer, size_t bytes
     ASCENDGDRBW_ASSERT(buffer != nullptr);
     ASCENDGDRBW_ASSERT(bytes > 0);
     ASCENDGDRBW_ASCEND_ASSERT(aclrtSetDevice(deviceId_));
+    constexpr int kDirectIbvAccessFlags =
+        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
+    const bool disableDirectDeviceIbvReg = IsDirectDeviceIbvRegDisabledByEnv();
+    if (disableDirectDeviceIbvReg) {
+        std::fprintf(stderr,
+                     "[ascendgdrbw] RegisterDeviceMemory skip direct path: direct_device_ibv_reg=disabled_by_env "
+                     "requested_nic=%s resolved_ibv=%s device=%d logic=%d phy=%u gid_index=%d pd=%p "
+                     "buffer=%p bytes=%zu access_flags=0x%x\n",
+                     nicName_.c_str(), resolvedIbvDeviceName_.c_str(), deviceId_, deviceLogicId_,
+                     devicePhyId_, gidIndex_, static_cast<void*>(protectionDomain_), buffer, bytes,
+                     kDirectIbvAccessFlags);
+    } else {
+        std::fprintf(stderr,
+                     "[ascendgdrbw] RegisterDeviceMemory begin: backend=ibverbs_direct_device "
+                     "requested_nic=%s resolved_ibv=%s device=%d logic=%d phy=%u gid_index=%d pd=%p "
+                     "buffer=%p bytes=%zu access_flags=0x%x\n",
+                     nicName_.c_str(), resolvedIbvDeviceName_.c_str(), deviceId_, deviceLogicId_,
+                     devicePhyId_, gidIndex_, static_cast<void*>(protectionDomain_), buffer, bytes,
+                     kDirectIbvAccessFlags);
+        ibv_mr* memoryRegion =
+            ibv_reg_mr(protectionDomain_, buffer, bytes, kDirectIbvAccessFlags);
+        if (memoryRegion != nullptr) {
+            std::fprintf(stderr,
+                         "[ascendgdrbw] RegisterDeviceMemory success: backend=ibverbs_direct_device "
+                         "requested_nic=%s resolved_ibv=%s device=%d logic=%d phy=%u gid_index=%d "
+                         "pd=%p mr=%p lkey=%u rkey=%u\n",
+                         nicName_.c_str(), resolvedIbvDeviceName_.c_str(), deviceId_, deviceLogicId_,
+                         devicePhyId_, gidIndex_, static_cast<void*>(protectionDomain_),
+                         static_cast<void*>(memoryRegion), memoryRegion->lkey, memoryRegion->rkey);
+
+            auto* registration = new MemoryRegistration();
+            registration->backend = MemoryRegistration::Backend::Ibverbs;
+            registration->ibvMemoryRegion = memoryRegion;
+            registration->lkey = memoryRegion->lkey;
+            registration->rkey = memoryRegion->rkey;
+            registration->backendTag = "ibverbs_direct_device";
+            return registration;
+        }
+
+        std::fprintf(stderr,
+                     "[ascendgdrbw] RegisterDeviceMemory failed: backend=ibverbs_direct_device "
+                     "requested_nic=%s resolved_ibv=%s device=%d logic=%d phy=%u gid_index=%d pd=%p "
+                     "buffer=%p bytes=%zu access_flags=0x%x errno=%d(%s)\n",
+                     nicName_.c_str(), resolvedIbvDeviceName_.c_str(), deviceId_, deviceLogicId_,
+                     devicePhyId_, gidIndex_, static_cast<void*>(protectionDomain_), buffer, bytes,
+                     kDirectIbvAccessFlags, errno, std::strerror(errno));
+    }
+
     std::fprintf(stderr,
-                 "[ascendgdrbw] RegisterDeviceMemory begin: backend=ra_global_mr requested_nic=%s resolved_ibv=%s "
-                 "device=%d phy=%u rdmaHandle=%p buffer=%p bytes=%zu\n",
-                 nicName_.c_str(), resolvedIbvDeviceName_.c_str(), deviceId_, devicePhyId_,
-                 rdmaHandle_, buffer, bytes);
+                 "[ascendgdrbw] RegisterDeviceMemory begin: backend=ra_global_mr_fallback "
+                 "requested_nic=%s resolved_ibv=%s device=%d logic=%d phy=%u gid_index=%d "
+                 "rdmaHandle=%p buffer=%p bytes=%zu access_flags=0x%x\n",
+                 nicName_.c_str(), resolvedIbvDeviceName_.c_str(), deviceId_, deviceLogicId_,
+                 devicePhyId_, gidIndex_, rdmaHandle_, buffer, bytes,
+                 RA_ACCESS_LOCAL_WRITE | RA_ACCESS_REMOTE_WRITE | RA_ACCESS_REMOTE_READ);
 
     MrInfoT info = {};
     info.addr = buffer;
@@ -405,16 +468,18 @@ MemoryRegistration* RDMAChannel::RegisterDeviceMemory(void* buffer, size_t bytes
     const HcclResult ret = hrtRaRegGlobalMr(rdmaHandle_, info, mrHandle);
     if (ret != HCCL_SUCCESS || mrHandle == nullptr) {
         std::fprintf(stderr,
-                     "[ascendgdrbw] RegisterDeviceMemory failed: requested_nic=%s resolved_ibv=%s "
-                     "device=%d phy=%u buffer=%p bytes=%zu ret=%d\n",
-                     nicName_.c_str(), resolvedIbvDeviceName_.c_str(), deviceId_, devicePhyId_, buffer,
-                     bytes, static_cast<int>(ret));
+                     "[ascendgdrbw] RegisterDeviceMemory failed: backend=ra_global_mr_fallback "
+                     "requested_nic=%s resolved_ibv=%s device=%d logic=%d phy=%u gid_index=%d "
+                     "buffer=%p bytes=%zu ret=%d mrHandle=%p\n",
+                     nicName_.c_str(), resolvedIbvDeviceName_.c_str(), deviceId_, deviceLogicId_,
+                     devicePhyId_, gidIndex_, buffer, bytes, static_cast<int>(ret), mrHandle);
     } else {
         std::fprintf(stderr,
-                     "[ascendgdrbw] RegisterDeviceMemory success: backend=ra_global_mr requested_nic=%s resolved_ibv=%s "
-                     "device=%d mrHandle=%p lkey=%u rkey=%u\n",
-                     nicName_.c_str(), resolvedIbvDeviceName_.c_str(), deviceId_, mrHandle,
-                     info.lkey, info.rkey);
+                     "[ascendgdrbw] RegisterDeviceMemory success: backend=ra_global_mr_fallback "
+                     "requested_nic=%s resolved_ibv=%s device=%d logic=%d phy=%u gid_index=%d "
+                     "mrHandle=%p lkey=%u rkey=%u\n",
+                     nicName_.c_str(), resolvedIbvDeviceName_.c_str(), deviceId_, deviceLogicId_,
+                     devicePhyId_, gidIndex_, mrHandle, info.lkey, info.rkey);
     }
     ASCENDGDRBW_HCCL_ASSERT(ret);
     ASCENDGDRBW_ASSERT(mrHandle != nullptr);
@@ -424,6 +489,7 @@ MemoryRegistration* RDMAChannel::RegisterDeviceMemory(void* buffer, size_t bytes
     registration->mrHandle = mrHandle;
     registration->lkey = info.lkey;
     registration->rkey = info.rkey;
+    registration->backendTag = "ra_global_mr_fallback";
     return registration;
 }
 

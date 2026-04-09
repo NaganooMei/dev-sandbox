@@ -148,13 +148,20 @@ int main(int argc, char** argv)
         ASCENDGDRBW_ASSERT(hostRegistration != nullptr);
         ASCENDGDRBW_ASSERT(deviceRegistration != nullptr);
         ASCENDGDRBW_ASSERT(hostRegistration->IsIbverbs());
-        ASCENDGDRBW_ASSERT(deviceRegistration->IsRaGlobal());
+        ASCENDGDRBW_ASSERT(deviceRegistration->IsIbverbs() || deviceRegistration->IsRaGlobal());
 
         std::fprintf(stderr,
                      "[device0-self-h2d] registration_summary host_backend=%s host_lkey=%u device_backend=%s device_lkey=%u device_rkey=%u\n",
                      hostRegistration->BackendName(), hostRegistration->lkey,
                      deviceRegistration->BackendName(), deviceRegistration->lkey,
                      deviceRegistration->rkey);
+        if (std::string(deviceRegistration->BackendName()) == "ibverbs_direct_device") {
+            std::fprintf(stderr,
+                         "[device0-self-h2d] registration_result case=direct_device_ibv_reg_success\n");
+        } else if (std::string(deviceRegistration->BackendName()) == "ra_global_mr_fallback") {
+            std::fprintf(stderr,
+                         "[device0-self-h2d] registration_result case=direct_device_ibv_reg_failed_ra_fallback_success\n");
+        }
 
         std::vector<double> samplesUsec;
         samplesUsec.reserve(options.iterations);

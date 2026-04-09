@@ -44,9 +44,13 @@ struct MemoryRegistration {
     void* mrHandle = nullptr;
     uint32_t lkey = 0;
     uint32_t rkey = 0;
+    std::string backendTag;
 
     const char* BackendName() const noexcept
     {
+        if (!backendTag.empty()) {
+            return backendTag.c_str();
+        }
         return backend == Backend::Ibverbs ? "ibverbs" : "ra_global_mr";
     }
 
