@@ -39,19 +39,29 @@ find_path(HCCL_PKG_INCLUDE_PATH hccl/base.h
 )
 find_path(ASCEND_BASE_INCLUDE_PATH securec.h
     PATHS
+        ${ASCEND_ROOT}
+        ${ASCEND_ROOT}/..
         ${ASCEND_ROOT_CANDIDATES}
     PATH_SUFFIXES
+        include
         include/base
+        pkg_inc
         pkg_inc/base
     NO_DEFAULT_PATH
 )
 find_path(DLOG_INCLUDE_PATH dlog_pub.h
     PATHS
+        ${ASCEND_ROOT}
+        ${ASCEND_ROOT}/..
         ${ASCEND_ROOT_CANDIDATES}
         ${HCOMM_ROOT}
     PATH_SUFFIXES
+        include
         include/base
+        include/log
+        pkg_inc
         pkg_inc/base
+        pkg_inc/log
         src/platform/hccp/external_depends/inc/log
     NO_DEFAULT_PATH
 )
@@ -86,6 +96,13 @@ message(STATUS "HCCL_LIB=${HCCL_LIB}")
 message(STATUS "HCOMM_LIB=${HCOMM_LIB}")
 message(STATUS "C_SEC_LIB=${C_SEC_LIB}")
 
+if(NOT ASCEND_BASE_INCLUDE_PATH)
+    message(WARNING "securec.h include root was not found under ASCEND_ROOT; the build will rely on system/toolchain include paths for securec.h")
+endif()
+if(NOT DLOG_INCLUDE_PATH)
+    message(WARNING "dlog_pub.h include root was not found under ASCEND_ROOT or hcomm; rdma_channel.cc may still fail to compile")
+endif()
+
 set(ASCENDGDRBW_COMMON_INCLUDE_DIRS
     ${ASCEND_RUNTIME_API_PATH}
     ${HCCL_INCLUDE_PATH}
@@ -105,7 +122,7 @@ set(ASCENDGDRBW_COMMON_INCLUDE_DIRS
     ${HCOMM_SOURCE_ROOT}/framework/common/src/config
 )
 
-if(ASCEND_RUNTIME_API_PATH AND ASCEND_RUNTIME_LIB AND HCCL_INCLUDE_PATH AND HCCL_PKG_INCLUDE_PATH AND ASCEND_BASE_INCLUDE_PATH AND DLOG_INCLUDE_PATH AND HCCL_LIB AND HCOMM_LIB AND C_SEC_LIB AND IBVERBS_INCLUDE_PATH AND IBVERBS_LIB)
+if(ASCEND_RUNTIME_API_PATH AND ASCEND_RUNTIME_LIB AND HCCL_INCLUDE_PATH AND HCCL_PKG_INCLUDE_PATH AND HCCL_LIB AND HCOMM_LIB AND C_SEC_LIB AND IBVERBS_INCLUDE_PATH AND IBVERBS_LIB)
     if(TARGET fmt::fmt)
         add_executable(ascendgdrbw
             ascendgdrbw.cc
@@ -138,5 +155,7 @@ if(ASCEND_RUNTIME_API_PATH AND ASCEND_RUNTIME_LIB AND HCCL_INCLUDE_PATH AND HCCL
         ${IBVERBS_LIB}
         Threads::Threads
     )
+else()
+    message(WARNING "Required core dependencies were not found, skip target ascendgdrbw_device0_self_h2d_min")
 endif()
 
