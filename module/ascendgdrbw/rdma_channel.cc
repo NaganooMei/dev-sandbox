@@ -90,46 +90,54 @@ bool CompareIpAndGid(const hccl::HcclIpAddress& localIp, const union ibv_gid& gi
     return std::memcmp(&gid, gidV4, sizeof(gid)) == 0;
 }
 
-hccl::HcclIpAddress ResolveDeviceIp(uint32_t devicePhyId)
+hccl::HcclIpAddress ResolveDeviceIp(uint32_t devicePhyId, int32_t deviceLogicId)
 {
-    std::vector<hccl::HcclIpAddress> deviceIps;
-    std::fprintf(stderr, "[ascendgdrbw] ResolveDeviceIp begin: phy=%u\n", devicePhyId);
+    std::fprintf(stderr, "[ascendgdrbw] ResolveDeviceIp begin: phy=%u logic=%d\n", devicePhyId, deviceLogicId);
+    HcclNetDevCtx netDevCtx = nullptr;
+    hccl::HcclIpAddress localIp;
     try {
-        ASCENDGDRBW_HCCL_ASSERT(hrtRaGetDeviceIP(devicePhyId, deviceIps));
+        ASCENDGDRBW_HCCL_ASSERT(HcclNetOpenDev(&netDevCtx,
+                                               NicType::DEVICE_NIC_TYPE,
+                                               static_cast<int32_t>(devicePhyId),
+                                               deviceLogicId,
+                                               hccl::HcclIpAddress(0)));
+        ASCENDGDRBW_HCCL_ASSERT(HcclNetDevGetLocalIp(netDevCtx, localIp));
     } catch (const std::bad_alloc& ex) {
+        if (netDevCtx != nullptr) {
+            HcclNetCloseDev(netDevCtx);
+            netDevCtx = nullptr;
+        }
         std::fprintf(stderr,
-                     "[ascendgdrbw] ResolveDeviceIp bad_alloc during hrtRaGetDeviceIP: phy=%u what=%s\n",
-                     devicePhyId, ex.what());
+                     "[ascendgdrbw] ResolveDeviceIp bad_alloc while opening netdev/local ip: phy=%u logic=%d what=%s\n",
+                     devicePhyId, deviceLogicId, ex.what());
         throw;
     } catch (const std::exception& ex) {
+        if (netDevCtx != nullptr) {
+            HcclNetCloseDev(netDevCtx);
+            netDevCtx = nullptr;
+        }
         std::fprintf(stderr,
-                     "[ascendgdrbw] ResolveDeviceIp exception during hrtRaGetDeviceIP: phy=%u what=%s\n",
-                     devicePhyId, ex.what());
+                     "[ascendgdrbw] ResolveDeviceIp exception while opening netdev/local ip: phy=%u logic=%d what=%s\n",
+                     devicePhyId, deviceLogicId, ex.what());
         throw;
     }
-    std::fprintf(stderr, "[ascendgdrbw] ResolveDeviceIp after hrtRaGetDeviceIP: phy=%u candidates=%zu\n",
-                 devicePhyId, deviceIps.size());
-    for (size_t index = 0; index < deviceIps.size(); ++index) {
-        std::fprintf(stderr, "[ascendgdrbw]   candidate[%zu]=%s family=%d invalid=%d\n", index,
-                     deviceIps[index].GetReadableAddress(), deviceIps[index].GetFamily(),
-                     deviceIps[index].IsInvalid() ? 1 : 0);
+
+    if (netDevCtx != nullptr) {
+        HcclNetCloseDev(netDevCtx);
+        netDevCtx = nullptr;
     }
-    for (const auto& ip : deviceIps) {
-        if (!ip.IsInvalid() && !ip.IsIPv6()) {
-            std::fprintf(stderr, "[ascendgdrbw] ResolveDeviceIp select IPv4=%s\n",
-                         ip.GetReadableAddress());
-            return ip;
-        }
+
+    std::fprintf(stderr, "[ascendgdrbw] ResolveDeviceIp via netdev: phy=%u logic=%d ip=%s family=%d invalid=%d\n",
+                 devicePhyId, deviceLogicId, localIp.GetReadableAddress(), localIp.GetFamily(),
+                 localIp.IsInvalid() ? 1 : 0);
+    if (!localIp.IsInvalid() && !localIp.IsIPv6()) {
+        return localIp;
     }
-    for (const auto& ip : deviceIps) {
-        if (!ip.IsInvalid()) {
-            std::fprintf(stderr, "[ascendgdrbw] ResolveDeviceIp select fallback=%s\n",
-                         ip.GetReadableAddress());
-            return ip;
-        }
+    if (!localIp.IsInvalid()) {
+        return localIp;
     }
-    AscendGdrbwThrowError("failed to resolve a valid device IP");
-    return hccl::HcclIpAddress();
+    AscendGdrbwThrowError("failed to resolve device NIC IP from HcclNetOpenDev/HcclNetDevGetLocalIp");
+    return localIp;
 }
 
 ibv_context* OpenNicContextByDeviceIp(const hccl::HcclIpAddress& deviceIp,
@@ -308,35 +316,17 @@ RDMAChannel::RDMAChannel(int32_t deviceId, std::string nicName, const RDMAChanne
     std::fprintf(stderr,
                  "[ascendgdrbw] About to resolve device IP: device=%d logic=%d phy=%u requested_nic=%s\n",
                  deviceId_, deviceLogicId_, devicePhyId_, nicName_.c_str());
-    hccl::HcclIpAddress bindIp;
     try {
-        bindIp = ResolveDeviceIp(devicePhyId_);
-    } catch (const std::bad_alloc& ex) {
-        std::fprintf(stderr,
-                     "[ascendgdrbw] bad_alloc while resolving device IP: device=%d logic=%d phy=%u what=%s\n",
-                     deviceId_, deviceLogicId_, devicePhyId_, ex.what());
-        throw;
-    }
-    try {
+        hccl::HcclIpAddress bindIp = ResolveDeviceIp(devicePhyId_, deviceLogicId_);
         resolvedDeviceIp_ = bindIp.GetReadableAddress();
-    } catch (const std::bad_alloc& ex) {
-        std::fprintf(stderr,
-                     "[ascendgdrbw] bad_alloc while storing resolved device IP: device=%d logic=%d phy=%u bind_ip=%s what=%s\n",
-                     deviceId_, deviceLogicId_, devicePhyId_, bindIp.GetReadableAddress(), ex.what());
-        throw;
-    }
-    std::fprintf(stderr, "[ascendgdrbw] Device IP resolved: phy=%u ip=%s\n",
-                 devicePhyId_, resolvedDeviceIp_.c_str());
-    try {
+        std::fprintf(stderr, "[ascendgdrbw] Device IP resolved: phy=%u ip=%s\n",
+                     devicePhyId_, resolvedDeviceIp_.c_str());
         context_ = OpenNicContextByDeviceIp(bindIp, resolvedIbvDeviceName_, gidIndex_);
     } catch (const std::exception& ex) {
-        context_ = OpenNicContextByName(nicName_);
-        resolvedIbvDeviceName_ = nicName_;
-        gidIndex_ = 0;
-        usedNameFallback_ = true;
         std::fprintf(stderr,
-                     "[ascendgdrbw] fallback to nic name: reason=%s requested_nic=%s resolved_ibv=%s gid_index=%d\n",
-                     ex.what(), nicName_.c_str(), resolvedIbvDeviceName_.c_str(), gidIndex_);
+                     "[ascendgdrbw] failed to resolve/open device NIC by device id: reason=%s requested_nic=%s phy=%u logic=%d\n",
+                     ex.what(), nicName_.c_str(), devicePhyId_, deviceLogicId_);
+        throw;
     }
     ASCENDGDRBW_ASSERT(context_ != nullptr);
     ASCENDGDRBW_HCCL_ASSERT(HrtRaRdmaGetHandle(devicePhyId_, rdmaHandle_));
