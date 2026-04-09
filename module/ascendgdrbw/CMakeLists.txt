@@ -156,6 +156,20 @@ if(ASCEND_RUNTIME_API_PATH AND ASCEND_RUNTIME_LIB AND HCCL_INCLUDE_PATH AND HCCL
         ${IBVERBS_LIB}
         Threads::Threads
     )
+
+    add_executable(ascendgdrbw_device_nic_probe_min
+        device_nic_probe_min.cc
+    )
+    target_include_directories(ascendgdrbw_device_nic_probe_min PRIVATE ${ASCENDGDRBW_COMMON_INCLUDE_DIRS})
+    target_link_libraries(ascendgdrbw_device_nic_probe_min PRIVATE
+        ${ASCEND_RUNTIME_LIB}
+        ${HCCL_LIB}
+        ${HCOMM_LIB}
+        ${HCCL_PLF_LIB}
+        ${C_SEC_LIB}
+        ${IBVERBS_LIB}
+        Threads::Threads
+    )
 else()
     message(WARNING "Required core dependencies were not found, skip target ascendgdrbw_device0_self_h2d_min")
 endif()
