@@ -28,11 +28,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 
 #include <infiniband/verbs.h>
-
-#include "error_handle.h"
 
 namespace {
 
@@ -41,6 +41,34 @@ constexpr int kIbvPort = 1;
 struct Options {
     std::string nicHint = "mlx5_0";
 };
+
+[[noreturn]] void ThrowError(const std::string& message)
+{
+    throw std::runtime_error(message);
+}
+
+std::string BuildLocation(const char* expression, const char* file, int line, const char* function)
+{
+    std::stringstream stream;
+    stream << "expression " << expression << " failed at " << function << " : " << file << ":" << line;
+    return stream.str();
+}
+
+std::string BuildErrnoMessage(const char* expression, int errorCode, const char* file, int line,
+                              const char* function)
+{
+    std::stringstream stream;
+    stream << "[" << errorCode << "] " << std::strerror(errorCode) << " in "
+           << BuildLocation(expression, file, line, function);
+    return stream.str();
+}
+
+#define IBV_PROBE_ASSERT(expr)                                                             \
+    do {                                                                                   \
+        if (!(expr)) {                                                                     \
+            ThrowError(BuildLocation(#expr, __FILE__, __LINE__, __PRETTY_FUNCTION__));    \
+        }                                                                                  \
+    } while (0)
 
 Options ParseOptions(int argc, char** argv)
 {
@@ -55,7 +83,7 @@ Options ParseOptions(int argc, char** argv)
             options.nicHint = arg.substr(std::strlen("--nic="));
             continue;
         }
-        AscendGdrbwThrowError("unknown argument: " + arg);
+        ThrowError("unknown argument: " + arg);
     }
     return options;
 }
@@ -80,7 +108,7 @@ int main(int argc, char** argv)
 
         int deviceCount = 0;
         ibv_device** deviceList = ibv_get_device_list(&deviceCount);
-        ASCENDGDRBW_ASSERT(deviceList != nullptr);
+        IBV_PROBE_ASSERT(deviceList != nullptr);
         std::fprintf(stderr, "[ibv-nic-probe] ibv_get_device_list success count=%d nic_hint=%s\n",
                      deviceCount, options.nicHint.c_str());
 
