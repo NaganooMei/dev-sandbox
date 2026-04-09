@@ -39,7 +39,7 @@ protected:
     int32_t deviceId_;
     size_t size_;
     size_t number_;
-    std::unordered_map<int32_t, MemoryRegistration*> memoryRegions_;
+    std::unordered_map<int32_t, ibv_mr*> memoryRegions_;
 
     void RegisterHostMemoryForAllChannels()
     {
@@ -62,14 +62,12 @@ protected:
     void ReleaseMemoryRegions() noexcept
     {
         for (auto& entry : memoryRegions_) {
-            if (entry.second != nullptr) {
-                ChannelManager::Instance().Get(entry.first).DeregisterMemory(entry.second);
-            }
+            if (entry.second != nullptr) { ibv_dereg_mr(entry.second); }
         }
         memoryRegions_.clear();
     }
 
-    MemoryRegistration* FindMemoryRegion(int32_t targetDeviceId) const
+    ibv_mr* FindMemoryRegion(int32_t targetDeviceId) const
     {
         const auto it = memoryRegions_.find(targetDeviceId);
         return (it == memoryRegions_.end()) ? nullptr : it->second;

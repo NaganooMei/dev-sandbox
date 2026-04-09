@@ -1,27 +1,3 @@
-/**
- * MIT License
- *
- * Copyright (c) 2026 relat-ivity
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- * */
-
 #include <acl/acl.h>
 
 #include <chrono>
@@ -131,11 +107,8 @@ int main(int argc, char** argv)
 
         channel = std::make_unique<RDMAChannel>(options.deviceId, options.nicHint, config);
         std::fprintf(stderr,
-                     "[device0-self-h2d] channel_summary device=%d logic=%d phy=%u requested_nic=%s resolved_ibv=%s resolved_ip=%s gid_index=%d fallback_by_name=%d\n",
-                     channel->DeviceId(), channel->DeviceLogicId(), channel->DevicePhyId(),
-                     channel->NicName().c_str(), channel->ResolvedIbvDeviceName().c_str(),
-                     channel->ResolvedDeviceIp().c_str(), channel->GidIndex(),
-                     channel->UsedNameFallback() ? 1 : 0);
+                     "[device0-self-h2d] channel_summary device=%d nic=%s mode=plain_ibverbs_h2d\n",
+                     channel->DeviceId(), channel->NicName().c_str());
 
         ASCENDGDRBW_ASCEND_ASSERT(aclrtMallocHost(&hostBuffer, options.bytes));
         ASCENDGDRBW_ASCEND_ASSERT(
@@ -147,21 +120,11 @@ int main(int argc, char** argv)
         deviceRegistration = channel->RegisterDeviceMemory(deviceBuffer, options.bytes);
         ASCENDGDRBW_ASSERT(hostRegistration != nullptr);
         ASCENDGDRBW_ASSERT(deviceRegistration != nullptr);
-        ASCENDGDRBW_ASSERT(hostRegistration->IsIbverbs());
-        ASCENDGDRBW_ASSERT(deviceRegistration->IsIbverbs() || deviceRegistration->IsRaGlobal());
 
         std::fprintf(stderr,
-                     "[device0-self-h2d] registration_summary host_backend=%s host_lkey=%u device_backend=%s device_lkey=%u device_rkey=%u\n",
-                     hostRegistration->BackendName(), hostRegistration->lkey,
-                     deviceRegistration->BackendName(), deviceRegistration->lkey,
+                     "[device0-self-h2d] registration_summary host_lkey=%u device_lkey=%u device_rkey=%u\n",
+                     hostRegistration->lkey, deviceRegistration->lkey,
                      deviceRegistration->rkey);
-        if (std::string(deviceRegistration->BackendName()) == "ibverbs_direct_device") {
-            std::fprintf(stderr,
-                         "[device0-self-h2d] registration_result case=direct_device_ibv_reg_success\n");
-        } else if (std::string(deviceRegistration->BackendName()) == "ra_global_mr_fallback") {
-            std::fprintf(stderr,
-                         "[device0-self-h2d] registration_result case=direct_device_ibv_reg_failed_ra_fallback_success\n");
-        }
 
         std::vector<double> samplesUsec;
         samplesUsec.reserve(options.iterations);

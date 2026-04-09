@@ -26,6 +26,7 @@
 
 #include <infiniband/verbs.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -33,30 +34,7 @@
 #include <unordered_map>
 #include <vector>
 
-struct MemoryRegistration {
-    enum class Backend {
-        Ibverbs,
-        RaGlobal,
-    };
-
-    Backend backend = Backend::Ibverbs;
-    ibv_mr* ibvMemoryRegion = nullptr;
-    void* mrHandle = nullptr;
-    uint32_t lkey = 0;
-    uint32_t rkey = 0;
-    std::string backendTag;
-
-    const char* BackendName() const noexcept
-    {
-        if (!backendTag.empty()) {
-            return backendTag.c_str();
-        }
-        return backend == Backend::Ibverbs ? "ibverbs" : "ra_global_mr";
-    }
-
-    bool IsIbverbs() const noexcept { return backend == Backend::Ibverbs; }
-    bool IsRaGlobal() const noexcept { return backend == Backend::RaGlobal; }
-};
+using MemoryRegistration = ibv_mr;
 
 struct RDMAChannelConfig {
     int cqDepth = 1024;
@@ -82,13 +60,7 @@ public:
     void Wait(uint64_t targetWorkRequestId);
 
     int32_t DeviceId() const noexcept { return deviceId_; }
-    int32_t DeviceLogicId() const noexcept { return deviceLogicId_; }
-    uint32_t DevicePhyId() const noexcept { return devicePhyId_; }
     const std::string& NicName() const noexcept { return nicName_; }
-    const std::string& ResolvedIbvDeviceName() const noexcept { return resolvedIbvDeviceName_; }
-    const std::string& ResolvedDeviceIp() const noexcept { return resolvedDeviceIp_; }
-    int GidIndex() const noexcept { return gidIndex_; }
-    bool UsedNameFallback() const noexcept { return usedNameFallback_; }
 
 private:
     void PollOneCompletion();
@@ -98,15 +70,7 @@ private:
     ibv_cq* completionQueue_ = nullptr;
     ibv_qp* queuePair_ = nullptr;
     int32_t deviceId_ = 0;
-    int32_t deviceLogicId_ = -1;
-    uint32_t devicePhyId_ = 0;
     std::string nicName_;
-    std::string resolvedIbvDeviceName_;
-    std::string resolvedDeviceIp_;
-    void* rdmaHandle_ = nullptr;
-    bool netInitialized_ = false;
-    bool usedNameFallback_ = false;
-    int gidIndex_ = 0;
     uint64_t nextWorkRequestId_ = 1;
     uint64_t completedWorkRequestId_ = 0;
     uint32_t outstandingWorkRequests_ = 0;

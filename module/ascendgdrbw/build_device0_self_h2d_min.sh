@@ -130,9 +130,6 @@ if [[ -z "${ASCEND_ROOT_OVERRIDE}" ]]; then
 fi
 echo "Using ASCEND_ROOT: ${ASCEND_ROOT_OVERRIDE}"
 
-export HCCL_INTRA_ROCE_ENABLE="${HCCL_INTRA_ROCE_ENABLE:-1}"
-export HCCL_INTRA_PCIE_ENABLE="${HCCL_INTRA_PCIE_ENABLE:-0}"
-
 if [[ "${CLEAN_BUILD}" == "1" ]]; then
     rm -rf "${BUILD_DIR}"
 fi
