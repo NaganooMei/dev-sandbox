@@ -141,7 +141,7 @@ DEFINE_COPY_CASE(OneHost2AllDeviceCEMultiStreamCase, "one_host_to_all_device_ce_
 {
     constexpr auto streamCount = 48;
     CopyResult result;
-    HostCopyBuffer srcBuffer{0, ctx.size, ctx.num};
+    AnonymousCopyBuffer srcBuffer{0, ctx.size, ctx.num};
     std::vector<const CopyBuffer*> srcBuffers(ctx.nDevice, &srcBuffer);
     std::vector<const CopyBuffer*> dstBuffers(ctx.nDevice);
     for (size_t device = 0; device < ctx.nDevice; device++) {
