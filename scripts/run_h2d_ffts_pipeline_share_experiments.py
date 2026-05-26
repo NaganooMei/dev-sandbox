@@ -219,7 +219,7 @@ def make_specs(args: argparse.Namespace) -> List[RunSpec]:
         exp3_variants = [
             *make_pipeline_variants(pipeline_targets, pipeline_case),
             Variant("ffts_full_no_pipeline", pipeline_case, "full_count"),
-            Variant("ascend_multistream_ce_copy", multistream_case, "none"),
+            Variant(multistream_case, multistream_case, "none"),
         ]
         for variant in exp3_variants:
             spec = RunSpec(
