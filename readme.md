@@ -68,6 +68,8 @@ case。
 | case | 传输方向 | 说明 |
 | --- | --- | --- |
 | `host_to_device_ce_multi_stream` | host -> device | 使用多 stream 提交 H2D 拷贝 |
+| `one_host_to_all_device_ce_multi_stream` | host0 -> all devices | 同一份 host0 buffer 通过多 stream 并发拷贝到所有 device |
+| `all_host_to_all_device_ce_multi_stream` | host[i] -> device[i] | 多个 host/device buffer 通过多 stream 一次批量提交 |
 
 ### Ascend FFTS Pipeline
 
@@ -90,14 +92,14 @@ Ascend FFTS pipeline case 注册在 `copy` 主程序中。Ascend 后端可用且
 
 ```bash
 COPY_FFTS_VALIDATE=1 \
-./build/module/copy/copy -t host_to_device_ffts_pipeline -s 37K -n 32 -i 4 -d 1
+./build/module/copy/copy -t host_to_device_ffts_pipeline -s 32K -n 32 -i 4 -d 1
 ```
 
 性能 smoke：
 
 ```bash
 COPY_FFTS_VALIDATE=0 COPY_FFTS_PIPELINE_OBJECT_FRAGS=8 \
-./build/module/copy/copy -t all_host_to_all_device_ffts_pipeline -s 37K -n 1024 -i 128 -d 1
+./build/module/copy/copy -t all_host_to_all_device_ffts_pipeline -s 32K -n 1024 -i 128 -d 1
 ```
 
 ### GDR
