@@ -41,13 +41,14 @@ public:
     }
     virtual ~CopyBuffer() = default;
     virtual std::string Name() const = 0;
-    const size_t& Device() const { return device_; }
-    const size_t& Size() const { return size_; }
-    const size_t& Number() const { return number_; }
-    void* operator[](size_t i) const
+    virtual void* At(size_t i) const
     {
         return static_cast<void*>(static_cast<char*>(addr_) + i * size_);
     }
+    const size_t& Device() const { return device_; }
+    const size_t& Size() const { return size_; }
+    const size_t& Number() const { return number_; }
+    void* operator[](size_t i) const { return At(i); }
 };
 
 #endif  // COPY_BUFFER_H

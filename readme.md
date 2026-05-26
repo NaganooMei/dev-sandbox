@@ -69,6 +69,37 @@ case。
 | --- | --- | --- |
 | `host_to_device_ce_multi_stream` | host -> device | 使用多 stream 提交 H2D 拷贝 |
 
+### Ascend FFTS Pipeline
+
+Ascend FFTS pipeline case 注册在 `copy` 主程序中。Ascend 后端可用且系统检测到 FFTS 头文件和
+`libruntime.so` 时，才会编译这个 case。
+
+| case | 传输方向 | 说明 |
+| --- | --- | --- |
+| `host_to_device_ffts_pipeline` | host -> fragmented device | 逐设备 H2D 写入双缓冲 device staging slot，再用 FFTS split 到多个 device fragment |
+| `one_host_to_all_device_ffts_pipeline` | host0 -> all fragmented devices | 同一份 host0 buffer 通过 H2D FFTS pipeline 拷贝到所有 device |
+| `all_host_to_all_device_ffts_pipeline` | host[i] -> fragmented device[i] | 多个 host/device buffer 一次批量提交 H2D FFTS pipeline |
+
+相关环境变量：
+
+- `COPY_FFTS_VALIDATE` 控制是否做正确性校验。设置为 `1`、`true`、`TRUE`、`on` 或 `ON` 时，case 会校验每个 device fragment；全部通过后输出 `PASS`。
+- `COPY_FFTS_PIPELINE_OBJECT_FRAGS` 控制每个 logical object 包含多少个 fragment，默认值为 `8`。它影响 H2D staging 的 object 粒度，也影响一次 FFTS split 覆盖的 fragment 数量。
+- `FFTS_MAX_READY_LANES` 控制 FFTS dispatcher 中一个 FFTS task 初始 ready 的 SDMA context 数量，默认值为 `8`。它不改变 logical object 大小，只影响 dispatcher 内部 ready lane 组织方式。
+
+最小正确性验证：
+
+```bash
+COPY_FFTS_VALIDATE=1 \
+./build/module/copy/copy -t host_to_device_ffts_pipeline -s 37K -n 32 -i 4 -d 1
+```
+
+性能 smoke：
+
+```bash
+COPY_FFTS_VALIDATE=0 COPY_FFTS_PIPELINE_OBJECT_FRAGS=8 \
+./build/module/copy/copy -t all_host_to_all_device_ffts_pipeline -s 37K -n 1024 -i 128 -d 1
+```
+
 ### GDR
 
 GDR case 注册在 `copy` 主程序中。CUDA 后端可用且系统检测到 `libibverbs` 头文件和库时，

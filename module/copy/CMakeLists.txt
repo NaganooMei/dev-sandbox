@@ -20,6 +20,18 @@ if(RUNTIME_BACKEND STREQUAL "CUDA")
 elseif(RUNTIME_BACKEND STREQUAL "Ascend")
     file(GLOB RUNTIME_SOURCE_FILES "ascend/*.cc" "ascend/*.h")
     target_link_libraries(copy PRIVATE Ascend::Runtime)
+    if(HAVE_ASCEND_FFTS_RUNTIME)
+        find_package(Threads REQUIRED)
+        list(APPEND RUNTIME_SOURCE_FILES
+            ascend/h2d_ffts_pipeline/copy_case_h2d_ffts_pipeline_ascend.cc)
+        target_include_directories(copy PRIVATE
+            ascend
+            ascend/h2d_ffts_pipeline
+            ${ASCEND_FFTS_INCLUDE_DIRS})
+        target_link_libraries(copy PRIVATE "${ASCEND_RUNTIME_LIBRARY}" Threads::Threads)
+    else()
+        message(STATUS "Skipping copy H2D FFTS pipeline case: FFTS headers or libruntime were not found")
+    endif()
 else()
     file(GLOB RUNTIME_SOURCE_FILES "simu/*.cc" "simu/*.h")
 endif()
