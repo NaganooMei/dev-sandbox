@@ -11,8 +11,11 @@
 脚本入口:
 
 ```bash
-python3 scripts/run_h2d_ffts_pipeline_share_experiments.py
+python3 scripts/run_h2d_ffts_pipeline_share_exp1.py
+python3 scripts/run_h2d_ffts_pipeline_share_exp3.py
 ```
+
+兼容入口 `scripts/run_h2d_ffts_pipeline_share_experiments.py` 仍然保留，也可以用 `--suite exp1` 或 `--suite exp3` 单独选择实验。
 
 默认参数:
 
@@ -24,7 +27,7 @@ python3 scripts/run_h2d_ffts_pipeline_share_experiments.py
 | `--pipeline-targets` | `1M 2M` | FFTS pipeline 的 logical object 聚合目标 |
 | `--exp1-sizes` | `2K 8K 32K 64K 128K 256K 512K` | 实验一的 IO size 扫描点 |
 | `--exp1-counts` | `1024 4096` | 实验一的 IO 数量组 |
-| `--exp3-size` | `32K` | 实验三固定 IO size |
+| `--exp3-sizes` | `2K 8K 32K 64K` | 实验三的 IO size 扫描点 |
 | `--exp3-count` | `1024` | 实验三固定 IO 数量 |
 | `--exp3-devices` | `8` | 实验三多卡设备数 |
 | `--ffts-max-ready-lanes` | `8` | FFTS dispatcher ready lane 数 |
@@ -52,7 +55,7 @@ python3 scripts/run_h2d_ffts_pipeline_share_experiments.py
 
 | 维度 | 设置 |
 | --- | --- |
-| IO size | `32K` |
+| IO size | `2K 8K 32K 64K` |
 | IO count | `1024` |
 | iterations | `128` |
 | device count | `8` |
@@ -159,7 +162,7 @@ flowchart TB
 注意点:
 
 - `2K x 1024` 正好是 2MiB，2MiB pipeline 和 full aggregate 会落到同一个 object 粒度，预期差距很小。
-- `32K x 1024` 是 32MiB，总体数据量足够大，同时 IO size 又比较常规，适合作为实验三的固定点；`4096` 组用于观察更大 IO 数量下 pipeline 和 CE 路径的稳定性。
+- `32K x 1024` 是 32MiB，总体数据量足够大，同时 IO size 又比较常规，适合作为实验三的核心观察点；`4096` 组用于观察更大 IO 数量下 pipeline 和 CE 路径的稳定性。
 - `512K` 时每个 2MiB object 只有 4 个 fragment，pipeline 的 object 数量减少，更适合看大 IO 下 FFTS split 的固定成本。
 
 ### 7. 实验三解读: 8 卡同时读
@@ -168,6 +171,7 @@ flowchart TB
 
 - `one_host_to_all_devices` 下，一块 host buffer 被 8 卡同时读，适合观察 host 侧读压力和跨卡并发提交能力。
 - `all_hosts_to_all_devices` 下，每张卡读自己的 host buffer，适合观察更理想的多卡独立数据源场景。
+- 实验三扫描 `2K 8K 32K 64K`，用于观察多卡拓扑下小 IO 和中等 IO 的差异。
 - multi-stream CE 仍然是逐 fragment copy；脚本会跑 `one_malloc_host_to_all_device_ce_multi_stream` 和 `all_host_to_all_device_ce_multi_stream`。
 - `one_malloc_host_to_all_device_ce_multi_stream` 用一块 `aclrtMallocHost` host buffer，`all_host_to_all_device_ce_multi_stream` 用 8 块独立 `aclrtMallocHost` host buffer，二者用于隔离 host 数据源拓扑差异。
 - multi-stream CE case 使用按设备并行提交，避免 8 卡 x 多 stream 被主线程串行提交放大。

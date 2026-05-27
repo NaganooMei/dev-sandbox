@@ -19,6 +19,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 DEFAULT_EXP1_SIZES = ["2K", "8K", "32K", "64K", "128K", "256K", "512K"]
 DEFAULT_EXP1_COUNTS = [1024, 4096]
+DEFAULT_EXP3_SIZES = ["2K", "8K", "32K", "64K"]
 DEFAULT_PIPELINE_TARGETS = ["1M", "2M"]
 
 STAT_RE = re.compile(
@@ -144,7 +145,7 @@ def make_pipeline_variants(targets: Iterable[int], case_name: str) -> List[Varia
     ]
 
 
-def make_specs(args: argparse.Namespace) -> List[RunSpec]:
+def make_exp1_specs(args: argparse.Namespace) -> List[RunSpec]:
     pipeline_targets = parse_pipeline_targets(args)
     variants = [
         *make_pipeline_variants(pipeline_targets, args.pipeline_case),
@@ -179,7 +180,12 @@ def make_specs(args: argparse.Namespace) -> List[RunSpec]:
                         object_frags_for(spec),
                     )
                 )
+    return specs
 
+
+def make_exp3_specs(args: argparse.Namespace) -> List[RunSpec]:
+    pipeline_targets = parse_pipeline_targets(args)
+    specs: List[RunSpec] = []
     exp3_topologies = [
         (
             "one_host_to_all_devices",
@@ -201,29 +207,39 @@ def make_specs(args: argparse.Namespace) -> List[RunSpec]:
                 for multistream_case in multistream_cases
             ],
         ]
-        for variant in exp3_variants:
-            spec = RunSpec(
-                experiment="exp3_eight_device_topology",
-                axis=topology,
-                topology=topology,
-                io_size=args.exp3_size,
-                io_count=args.exp3_count,
-                devices=args.exp3_devices,
-                variant=variant,
-                object_frags=None,
-            )
-            specs.append(
-                RunSpec(
-                    spec.experiment,
-                    spec.axis,
-                    spec.topology,
-                    spec.io_size,
-                    spec.io_count,
-                    spec.devices,
-                    spec.variant,
-                    object_frags_for(spec),
+        for size in args.exp3_sizes:
+            for variant in exp3_variants:
+                spec = RunSpec(
+                    experiment="exp3_eight_device_topology",
+                    axis=f"{topology}_x{size}",
+                    topology=topology,
+                    io_size=size,
+                    io_count=args.exp3_count,
+                    devices=args.exp3_devices,
+                    variant=variant,
+                    object_frags=None,
                 )
-            )
+                specs.append(
+                    RunSpec(
+                        spec.experiment,
+                        spec.axis,
+                        spec.topology,
+                        spec.io_size,
+                        spec.io_count,
+                        spec.devices,
+                        spec.variant,
+                        object_frags_for(spec),
+                    )
+                )
+    return specs
+
+
+def make_specs(args: argparse.Namespace) -> List[RunSpec]:
+    specs: List[RunSpec] = []
+    if args.suite in ("all", "exp1"):
+        specs.extend(make_exp1_specs(args))
+    if args.suite in ("all", "exp3"):
+        specs.extend(make_exp3_specs(args))
     return specs
 
 
@@ -434,10 +450,11 @@ def write_report(args: argparse.Namespace, out_dir: Path, summary_file: Path) ->
     print(f"[report] wrote {report_file}")
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(default_suite: str = "all") -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run H2D FFTS pipeline share experiments and collect tables."
     )
+    parser.add_argument("--suite", choices=["all", "exp1", "exp3"], default=default_suite)
     parser.add_argument("--copy-bin", default="./build/module/copy/copy")
     parser.add_argument("--output-root", default="logs/h2d_ffts_pipeline_share")
     parser.add_argument("--run-id", default=dt.datetime.now().strftime("%Y%m%d-%H%M%S"))
@@ -445,7 +462,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--iterations", type=int, default=128)
     parser.add_argument("--exp1-sizes", nargs="+", default=DEFAULT_EXP1_SIZES)
     parser.add_argument("--exp1-counts", nargs="+", type=int, default=DEFAULT_EXP1_COUNTS)
-    parser.add_argument("--exp3-size", default="32K")
+    parser.add_argument("--exp3-sizes", nargs="+", default=DEFAULT_EXP3_SIZES)
+    parser.add_argument("--exp3-size", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--exp3-count", type=int, default=1024)
     parser.add_argument("--exp3-devices", type=int, default=8)
     parser.add_argument("--case-wait-sec", type=float, default=0.3)
@@ -469,11 +487,13 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.target_object_bytes is not None:
         args.pipeline_targets = [str(args.target_object_bytes)]
+    if args.exp3_size is not None:
+        args.exp3_sizes = [args.exp3_size]
     return args
 
 
-def main() -> int:
-    args = parse_args()
+def main(default_suite: str = "all") -> int:
+    args = parse_args(default_suite)
     out_dir = Path(args.output_root) / args.run_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
