@@ -207,19 +207,22 @@ def make_specs(args: argparse.Namespace) -> List[RunSpec]:
         (
             "one_host_to_all_devices",
             args.one_host_pipeline_case,
-            args.one_host_multistream_case,
+            [args.one_host_multistream_case, args.one_malloc_host_multistream_case],
         ),
         (
             "all_hosts_to_all_devices",
             args.all_host_pipeline_case,
-            args.all_host_multistream_case,
+            [args.all_host_multistream_case],
         ),
     ]
-    for topology, pipeline_case, multistream_case in exp3_topologies:
+    for topology, pipeline_case, multistream_cases in exp3_topologies:
         exp3_variants = [
             *make_pipeline_variants(pipeline_targets, pipeline_case),
             Variant("ffts_full_no_pipeline", pipeline_case, "full_count"),
-            Variant(multistream_case, multistream_case, "none"),
+            *[
+                Variant(multistream_case, multistream_case, "none")
+                for multistream_case in multistream_cases
+            ],
         ]
         for variant in exp3_variants:
             spec = RunSpec(
@@ -496,6 +499,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--all-host-pipeline-case", default="all_host_to_all_device_ffts_pipeline")
     parser.add_argument(
         "--one-host-multistream-case", default="one_host_to_all_device_ce_multi_stream"
+    )
+    parser.add_argument(
+        "--one-malloc-host-multistream-case",
+        default="one_malloc_host_to_all_device_ce_multi_stream",
     )
     parser.add_argument(
         "--all-host-multistream-case", default="all_host_to_all_device_ce_multi_stream"

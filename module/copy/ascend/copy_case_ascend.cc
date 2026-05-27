@@ -153,6 +153,26 @@ DEFINE_COPY_CASE(OneHost2AllDeviceCEMultiStreamCase, "one_host_to_all_device_ce_
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
 
+DEFINE_COPY_CASE(OneMallocHost2AllDeviceCEMultiStreamCase,
+                 "one_malloc_host_to_all_device_ce_multi_stream",
+                 "memcpy from one aclrtMallocHost buffer to all device with ce using multi "
+                 "stream at one time",
+                 ctx)
+{
+    constexpr auto streamCount = 48;
+    CopyResult result;
+    HostCopyBuffer srcBuffer{0, ctx.size, ctx.num};
+    std::vector<const CopyBuffer*> srcBuffers(ctx.nDevice, &srcBuffer);
+    std::vector<const CopyBuffer*> dstBuffers(ctx.nDevice);
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        dstBuffers[device] = new DeviceCopyBuffer{device, ctx.size, ctx.num};
+    }
+    H2DCEMultiStreamCopyInstance instance{ctx.iter, false, streamCount};
+    result.Push(instance.DoCopyBatch(srcBuffers, dstBuffers));
+    for (size_t device = 0; device < ctx.nDevice; device++) { delete dstBuffers[device]; }
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
 DEFINE_COPY_CASE(AllHost2AllDeviceCEMultiStreamCase, "all_host_to_all_device_ce_multi_stream",
                  "memcpy from all host to all device with ce using multi stream at one time", ctx)
 {

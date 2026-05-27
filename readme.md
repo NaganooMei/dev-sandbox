@@ -68,7 +68,8 @@ case。
 | case | 传输方向 | 说明 |
 | --- | --- | --- |
 | `host_to_device_ce_multi_stream` | host -> device | 使用多 stream 提交 H2D 拷贝 |
-| `one_host_to_all_device_ce_multi_stream` | host0 -> all devices | 同一份 host0 buffer 通过多 stream 并发拷贝到所有 device |
+| `one_host_to_all_device_ce_multi_stream` | anon host0 -> all devices | 同一份 mmap + aclrtHostRegisterV2 host0 buffer 通过多 stream 并发拷贝到所有 device |
+| `one_malloc_host_to_all_device_ce_multi_stream` | aclrtMallocHost host0 -> all devices | 同一份 aclrtMallocHost host0 buffer 通过多 stream 并发拷贝到所有 device |
 | `all_host_to_all_device_ce_multi_stream` | host[i] -> device[i] | 多个 host/device buffer 通过多 stream 一次批量提交 |
 
 ### Ascend FFTS Pipeline

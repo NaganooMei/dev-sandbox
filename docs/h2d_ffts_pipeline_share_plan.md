@@ -30,7 +30,8 @@ python3 scripts/run_h2d_ffts_pipeline_share_experiments.py
 | `--exp3-count` | `1024` | 实验三固定 IO 数量 |
 | `--exp3-devices` | `8` | 实验三多卡设备数 |
 | `--ffts-max-ready-lanes` | `8` | FFTS dispatcher ready lane 数 |
-| `--one-host-multistream-case` | `one_host_to_all_device_ce_multi_stream` | 实验三一块 host buffer 的 multi-stream CE 对照 |
+| `--one-host-multistream-case` | `one_host_to_all_device_ce_multi_stream` | 实验三一块 mmap registered host buffer 的 multi-stream CE 对照 |
+| `--one-malloc-host-multistream-case` | `one_malloc_host_to_all_device_ce_multi_stream` | 实验三一块 aclrtMallocHost buffer 的 multi-stream CE 对照 |
 | `--all-host-multistream-case` | `all_host_to_all_device_ce_multi_stream` | 实验三八块 host buffer 的 multi-stream CE 对照 |
 
 输出目录默认在 `logs/h2d_ffts_pipeline_share/<run-id>`，包含三类文件:
@@ -69,7 +70,7 @@ python3 scripts/run_h2d_ffts_pipeline_share_experiments.py
 | device count | `8` |
 | 拓扑一 | `one_host_to_all_devices`: 8 卡同时读一块 host buffer |
 | 拓扑二 | `all_hosts_to_all_devices`: 8 卡同时读 8 块独立 host buffer |
-| 对比对象 | FFTS 1MiB pipeline、FFTS 2MiB pipeline、FFTS 全聚合不 pipeline、`one_host_to_all_device_ce_multi_stream`、`all_host_to_all_device_ce_multi_stream` |
+| 对比对象 | FFTS 1MiB pipeline、FFTS 2MiB pipeline、FFTS 全聚合不 pipeline、`one_host_to_all_device_ce_multi_stream`、`one_malloc_host_to_all_device_ce_multi_stream`、`all_host_to_all_device_ce_multi_stream` |
 
 聚合规则:
 
@@ -187,7 +188,8 @@ flowchart TB
 
 - `one_host_to_all_devices` 下，一块 host buffer 被 8 卡同时读，适合观察 host 侧读压力和跨卡并发提交能力。
 - `all_hosts_to_all_devices` 下，每张卡读自己的 host buffer，适合观察更理想的多卡独立数据源场景。
-- multi-stream CE 仍然是逐 fragment copy；脚本会分别跑 `one_host_to_all_device_ce_multi_stream` 和 `all_host_to_all_device_ce_multi_stream`。
+- multi-stream CE 仍然是逐 fragment copy；脚本会分别跑 `one_host_to_all_device_ce_multi_stream`、`one_malloc_host_to_all_device_ce_multi_stream` 和 `all_host_to_all_device_ce_multi_stream`。
+- `one_host_to_all_device_ce_multi_stream` 用 mmap + `aclrtHostRegisterV2` 的 anonymous buffer，`one_malloc_host_to_all_device_ce_multi_stream` 用 `aclrtMallocHost` buffer，二者用于隔离 host 内存来源差异。
 - 这两个 multi-stream CE case 使用按设备并行提交，避免 8 卡 x 多 stream 被主线程串行提交放大。
 - FFTS pipeline 是每卡先聚合到 staging slot，再 split 到 device fragments。
 - 如果 FFTS 在两种拓扑下都能保持优势，说明方案不是只对单卡局部场景有效。
