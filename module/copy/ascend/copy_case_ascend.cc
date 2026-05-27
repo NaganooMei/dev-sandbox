@@ -21,6 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <vector>
 #include "copy_buffer_ascend.h"
 #include "copy_case.h"
 #include "copy_instance_ascend.h"
@@ -52,11 +53,12 @@ DEFINE_COPY_CASE(Host2DeviceBatchCECase, "host_to_device_batch_ce",
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
 
-DEFINE_COPY_CASE_NO_RUNTIME(OneHost2AllDeviceCECase, "one_host_to_all_device_ce",
-                            "memcpy from one shared host to all device with ce", ctx)
+DEFINE_COPY_CASE_NO_RUNTIME(OneShareHost2AllDeviceCECase, "one_share_host_to_all_device_ce",
+                            "memcpy from one shared host to all device with ce using fork submit",
+                            ctx)
 {
     CopyResult result;
-    SharedHostRegion srcRegion{"one_host_to_all_device_ce", 0, ctx.size, ctx.num};
+    SharedHostRegion srcRegion{"one_share_host_to_all_device_ce", 0, ctx.size, ctx.num};
     result.Push(ascend_copy::RunForkedCopyBatch(
         ctx, srcRegion.Name(), "acl::device::all", "CE-FORK", [&](size_t device) {
             SharedHostCopyBuffer srcBuffer{srcRegion.ShmName(), device, ctx.size, ctx.num};
@@ -64,6 +66,19 @@ DEFINE_COPY_CASE_NO_RUNTIME(OneHost2AllDeviceCECase, "one_host_to_all_device_ce"
             H2DCECopyInstance instance{ctx.iter, false};
             return instance.DoCopy(&srcBuffer, &dstBuffer);
         }));
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
+DEFINE_COPY_CASE(OneHost2AllDeviceCECase, "one_host_to_all_device_ce",
+                 "memcpy from one host to all device with ce", ctx)
+{
+    CopyResult result;
+    HostCopyBuffer srcBuffer{0, ctx.size, ctx.num};
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        DeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+        H2DCECopyInstance instance{ctx.iter, false};
+        result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
+    }
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
 
@@ -135,12 +150,13 @@ DEFINE_COPY_CASE(Host2DeviceCEMultiStreamCase, "host_to_device_ce_multi_stream",
 }
 
 DEFINE_COPY_CASE_NO_RUNTIME(
-    OneHost2AllDeviceCEMultiStreamCase, "one_host_to_all_device_ce_multi_stream",
+    OneShareHost2AllDeviceCEMultiStreamCase, "one_share_host_to_all_device_ce_multi_stream",
     "memcpy from one shared host to all device with ce using multi stream and fork submit", ctx)
 {
     constexpr auto streamCount = 48;
     CopyResult result;
-    SharedHostRegion srcRegion{"one_host_to_all_device_ce_multi_stream", 0, ctx.size, ctx.num};
+    SharedHostRegion srcRegion{"one_share_host_to_all_device_ce_multi_stream", 0, ctx.size,
+                               ctx.num};
     result.Push(ascend_copy::RunForkedCopyBatch(
         ctx, srcRegion.Name(), "acl::device::all", "CE-MS-FORK", [&](size_t device) {
             SharedHostCopyBuffer srcBuffer{srcRegion.ShmName(), device, ctx.size, ctx.num};
@@ -151,23 +167,39 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
 
-DEFINE_COPY_CASE_NO_RUNTIME(OneMallocHost2AllDeviceCEMultiStreamCase,
-                            "one_malloc_host_to_all_device_ce_multi_stream",
-                            "compat alias: memcpy from one shared host to all device with ce using "
-                            "multi stream and fork submit",
-                            ctx)
+DEFINE_COPY_CASE(OneHost2AllDeviceCEMultiStreamCase, "one_host_to_all_device_ce_multi_stream",
+                 "memcpy from one host to all device with ce using multi stream", ctx)
 {
     constexpr auto streamCount = 48;
     CopyResult result;
-    SharedHostRegion srcRegion{"one_malloc_host_to_all_device_ce_multi_stream", 0, ctx.size,
-                               ctx.num};
-    result.Push(ascend_copy::RunForkedCopyBatch(
-        ctx, srcRegion.Name(), "acl::device::all", "CE-MS-FORK", [&](size_t device) {
-            SharedHostCopyBuffer srcBuffer{srcRegion.ShmName(), device, ctx.size, ctx.num};
-            DeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
-            H2DCEMultiStreamCopyInstance instance{ctx.iter, false, streamCount};
-            return instance.DoCopy(&srcBuffer, &dstBuffer);
-        }));
+    HostCopyBuffer srcBuffer{0, ctx.size, ctx.num};
+    std::vector<const CopyBuffer*> srcBuffers(ctx.nDevice, &srcBuffer);
+    std::vector<const CopyBuffer*> dstBuffers(ctx.nDevice);
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        dstBuffers[device] = new DeviceCopyBuffer{device, ctx.size, ctx.num};
+    }
+    H2DCEMultiStreamCopyInstance instance{ctx.iter, false, streamCount};
+    result.Push(instance.DoCopyBatch(srcBuffers, dstBuffers));
+    for (size_t device = 0; device < ctx.nDevice; device++) { delete dstBuffers[device]; }
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
+DEFINE_COPY_CASE(OneMallocHost2AllDeviceCEMultiStreamCase,
+                 "one_malloc_host_to_all_device_ce_multi_stream",
+                 "compat alias: memcpy from one host to all device with ce using multi stream",
+                 ctx)
+{
+    constexpr auto streamCount = 48;
+    CopyResult result;
+    HostCopyBuffer srcBuffer{0, ctx.size, ctx.num};
+    std::vector<const CopyBuffer*> srcBuffers(ctx.nDevice, &srcBuffer);
+    std::vector<const CopyBuffer*> dstBuffers(ctx.nDevice);
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        dstBuffers[device] = new DeviceCopyBuffer{device, ctx.size, ctx.num};
+    }
+    H2DCEMultiStreamCopyInstance instance{ctx.iter, false, streamCount};
+    result.Push(instance.DoCopyBatch(srcBuffers, dstBuffers));
+    for (size_t device = 0; device < ctx.nDevice; device++) { delete dstBuffers[device]; }
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
 

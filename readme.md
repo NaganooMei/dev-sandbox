@@ -44,8 +44,9 @@ case。
 | --- | --- | --- | --- |
 | `host_to_device_ce` | CUDA / Ascend | host -> device | 逐设备 H2D 拷贝 |
 | `host_to_device_batch_ce` | CUDA / Ascend | host -> device | 使用 batch CE 提交 H2D 拷贝 |
+| `one_share_host_to_all_device_ce` | Ascend | shared host -> all devices | 一块 POSIX shared memory host buffer 通过 fork fan-out 到所有 device |
 | `one_host_to_all_device_ce` | CUDA / Ascend | host0 -> all devices | 同一份 host buffer 依次拷贝到所有 device |
-| `all_host_to_all_device_ce` | CUDA / Ascend | host[i] -> device[i] | 多个 host/device buffer 一次批量提交 |
+| `all_host_to_all_device_ce` | CUDA / Ascend | host[i] -> device[i] | 多个 host/device buffer 拷贝到对应 device；Ascend 通过 fork 并发提交 |
 | `device_to_device_ce` | CUDA / Ascend | device -> device | 单设备内 D2D 拷贝 |
 | `one_device_to_all_device_ce` | CUDA / Ascend | device0 -> all devices | 同一份 device buffer 依次拷贝到所有 device |
 | `anonymous_to_device_ce` | CUDA / Ascend | anonymous host -> device | 从匿名 host 内存拷贝到 device |
@@ -68,9 +69,10 @@ case。
 | case | 传输方向 | 说明 |
 | --- | --- | --- |
 | `host_to_device_ce_multi_stream` | host -> device | 使用多 stream 提交 H2D 拷贝 |
-| `one_host_to_all_device_ce_multi_stream` | anon host0 -> all devices | 同一份 mmap + aclrtHostRegisterV2 host0 buffer 通过多 stream 并发拷贝到所有 device |
-| `one_malloc_host_to_all_device_ce_multi_stream` | aclrtMallocHost host0 -> all devices | 同一份 aclrtMallocHost host0 buffer 通过多 stream 并发拷贝到所有 device |
-| `all_host_to_all_device_ce_multi_stream` | host[i] -> device[i] | 多个 host/device buffer 通过多 stream 一次批量提交 |
+| `one_share_host_to_all_device_ce_multi_stream` | shared host -> all devices | 一块 POSIX shared memory host buffer 通过 fork fan-out 到所有 device，单卡内使用多 stream |
+| `one_host_to_all_device_ce_multi_stream` | host0 -> all devices | 同一份 aclrtMallocHost host0 buffer 通过多 stream 拷贝到所有 device |
+| `one_malloc_host_to_all_device_ce_multi_stream` | host0 -> all devices | 兼容 alias，语义等同 `one_host_to_all_device_ce_multi_stream` |
+| `all_host_to_all_device_ce_multi_stream` | host[i] -> device[i] | 多个 host/device buffer 通过 fork 并发提交，单卡内使用多 stream |
 
 ### Ascend FFTS Pipeline
 
@@ -80,8 +82,9 @@ Ascend FFTS pipeline case 注册在 `copy` 主程序中。Ascend 后端可用且
 | case | 传输方向 | 说明 |
 | --- | --- | --- |
 | `host_to_device_ffts_pipeline` | host -> fragmented device | 逐设备 H2D 写入双缓冲 device staging slot，再用 FFTS split 到多个 device fragment |
+| `one_share_host_to_all_device_ffts_pipeline` | shared host -> all fragmented devices | 一块 POSIX shared memory host buffer 通过 fork fan-out 到所有 fragmented device，单卡内使用 H2D FFTS pipeline |
 | `one_host_to_all_device_ffts_pipeline` | host0 -> all fragmented devices | 同一份 host0 buffer 通过 H2D FFTS pipeline 拷贝到所有 device |
-| `all_host_to_all_device_ffts_pipeline` | host[i] -> fragmented device[i] | 多个 host/device buffer 一次批量提交 H2D FFTS pipeline |
+| `all_host_to_all_device_ffts_pipeline` | host[i] -> fragmented device[i] | 多个 host/device buffer 通过 fork 并发提交 H2D FFTS pipeline |
 
 相关环境变量：
 
