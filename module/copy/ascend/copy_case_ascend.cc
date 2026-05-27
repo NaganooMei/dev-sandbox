@@ -73,7 +73,7 @@ DEFINE_COPY_CASE(AllHost2AllDeviceCECase, "all_host_to_all_device_ce",
         srcBuffers[device] = new HostCopyBuffer{device, ctx.size, ctx.num};
         dstBuffers[device] = new DeviceCopyBuffer{device, ctx.size, ctx.num};
     }
-    H2DCECopyInstance instance{ctx.iter, false};
+    H2DCEParallelSubmitCopyInstance instance{ctx.iter, false};
     CopyResult result;
     result.Push(instance.DoCopyBatch(srcBuffers, dstBuffers));
     for (size_t device = 0; device < ctx.nDevice; device++) {
