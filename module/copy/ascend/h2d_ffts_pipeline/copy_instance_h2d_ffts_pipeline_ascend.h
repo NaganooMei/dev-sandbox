@@ -27,8 +27,13 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <condition_variable>
+#include <exception>
+#include <functional>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <utility>
 #include <vector>
 #include "ascend/copy_buffer_ascend.h"
@@ -65,10 +70,23 @@ protected:
         std::vector<FftsD2DDispatcher> objectDispatchers;
     };
 
+    struct SubmitWorker {
+        std::mutex mutex;
+        std::condition_variable ready;
+        std::condition_variable finished;
+        std::function<void()> task;
+        std::exception_ptr error;
+        bool hasTask = false;
+        bool done = true;
+        bool stop = false;
+        std::thread thread;
+    };
+
     size_t configuredObjectFrags_ = 1;
     aclrtEvent totalStart_ = nullptr;
     aclrtEvent totalEnd_ = nullptr;
     std::vector<PipelineContext> contexts_;
+    std::vector<std::unique_ptr<SubmitWorker>> submitWorkers_;
 
     void Prepare(const std::vector<const CopyBuffer*>& srcBuffers,
                  const std::vector<const CopyBuffer*>& dstBuffers) override
@@ -122,10 +140,12 @@ protected:
         ASCEND_ASSERT(aclrtSetDevice(contexts_[0].deviceId));
         ASCEND_ASSERT(aclrtCreateEvent(&totalStart_));
         ASCEND_ASSERT(aclrtCreateEvent(&totalEnd_));
+        StartSubmitWorkers(contexts_.size());
     }
 
     void Cleanup() override
     {
+        StopSubmitWorkers();
         for (auto& ctx : contexts_) {
             ASCEND_ASSERT(aclrtSetDevice(ctx.deviceId));
             for (auto& event : ctx.slotReady) {
@@ -209,11 +229,94 @@ protected:
         }
     }
 
+    void StartSubmitWorkers(size_t workerCount)
+    {
+        StopSubmitWorkers();
+        if (workerCount <= 1) { return; }
+
+        submitWorkers_.reserve(workerCount);
+        for (size_t index = 0; index < workerCount; ++index) {
+            auto worker = std::make_unique<SubmitWorker>();
+            auto* workerPtr = worker.get();
+            worker->thread = std::thread([workerPtr]() { SubmitWorkerLoop(workerPtr); });
+            submitWorkers_.emplace_back(std::move(worker));
+        }
+    }
+
+    void StopSubmitWorkers() noexcept
+    {
+        for (auto& worker : submitWorkers_) {
+            {
+                std::lock_guard<std::mutex> lock(worker->mutex);
+                worker->stop = true;
+            }
+            worker->ready.notify_one();
+        }
+
+        for (auto& worker : submitWorkers_) {
+            if (worker->thread.joinable()) { worker->thread.join(); }
+        }
+        submitWorkers_.clear();
+    }
+
+    static void SubmitWorkerLoop(SubmitWorker* worker)
+    {
+        while (true) {
+            std::function<void()> task;
+            {
+                std::unique_lock<std::mutex> lock(worker->mutex);
+                worker->ready.wait(lock, [worker]() { return worker->hasTask || worker->stop; });
+                if (worker->stop && !worker->hasTask) { return; }
+                task = std::move(worker->task);
+                worker->hasTask = false;
+            }
+
+            std::exception_ptr error;
+            try {
+                task();
+            } catch (...) {
+                error = std::current_exception();
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(worker->mutex);
+                worker->error = error;
+                worker->done = true;
+            }
+            worker->finished.notify_one();
+        }
+    }
+
     void SubmitContexts()
     {
-        for (auto& ctx : contexts_) {
-            SubmitContext(ctx);
+        if (contexts_.size() == 1) {
+            SubmitContext(contexts_[0]);
+            return;
         }
+
+        ASSERT(submitWorkers_.size() == contexts_.size());
+        for (size_t index = 0; index < contexts_.size(); ++index) {
+            auto* worker = submitWorkers_[index].get();
+            {
+                std::lock_guard<std::mutex> lock(worker->mutex);
+                ASSERT(!worker->hasTask);
+                worker->task = [this, index]() { SubmitContext(contexts_[index]); };
+                worker->error = nullptr;
+                worker->done = false;
+                worker->hasTask = true;
+            }
+            worker->ready.notify_one();
+        }
+
+        std::exception_ptr error;
+        for (auto& worker : submitWorkers_) {
+            auto* workerPtr = worker.get();
+            std::unique_lock<std::mutex> lock(worker->mutex);
+            worker->finished.wait(lock, [workerPtr]() { return workerPtr->done; });
+            if (error == nullptr && worker->error != nullptr) { error = worker->error; }
+        }
+
+        if (error != nullptr) { std::rethrow_exception(error); }
     }
 
     void SubmitContext(PipelineContext& ctx)
