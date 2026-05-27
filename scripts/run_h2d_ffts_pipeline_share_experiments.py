@@ -21,6 +21,10 @@ DEFAULT_EXP1_SIZES = ["2K", "8K", "32K", "64K", "128K", "256K", "512K"]
 DEFAULT_EXP1_COUNTS = [1024, 4096]
 DEFAULT_EXP3_SIZES = ["2K", "8K", "32K", "64K"]
 DEFAULT_PIPELINE_TARGETS = ["1M", "2M"]
+DEFAULT_ONE_SHARE_HOST_PIPELINE_CASE = "one_share_host_to_all_device_ffts_pipeline"
+DEFAULT_ONE_SHARE_HOST_MULTISTREAM_CASE = "one_share_host_to_all_device_ce_multi_stream"
+DEFAULT_ALL_HOST_PIPELINE_CASE = "all_host_to_all_device_ffts_pipeline"
+DEFAULT_ALL_HOST_MULTISTREAM_CASE = "all_host_to_all_device_ce_multi_stream"
 
 STAT_RE = re.compile(
     r"(?P<submit_min>\d+)\s*/\s*"
@@ -188,9 +192,9 @@ def make_exp3_specs(args: argparse.Namespace) -> List[RunSpec]:
     specs: List[RunSpec] = []
     exp3_topologies = [
         (
-            "one_host_to_all_devices",
-            args.one_host_pipeline_case,
-            [args.one_malloc_host_multistream_case],
+            "one_share_host_to_all_devices",
+            args.one_share_host_pipeline_case,
+            [args.one_share_host_multistream_case],
         ),
         (
             "all_hosts_to_all_devices",
@@ -445,7 +449,7 @@ def write_report(args: argparse.Namespace, out_dir: Path, summary_file: Path) ->
         out.write("- BW(GB/s): `copy` 程序按 `size * count / Copy Avg` 计算的带宽。\n")
         out.write("- Object Frags: FFTS pipeline 每个 logical object 聚合的 IO fragment 数。\n")
         out.write("- `ffts_full_no_pipeline` 的 Object Frags 等于 IO Count，表示全量聚合为一个 object。\n")
-        out.write("- Topology: `one_host_to_all_devices` 表示 8 卡同时读一块 host buffer；")
+        out.write("- Topology: `one_share_host_to_all_devices` 表示 8 卡同时读一块 shared host buffer；")
         out.write("`all_hosts_to_all_devices` 表示 8 卡同时读 8 块独立 host buffer。\n")
     print(f"[report] wrote {report_file}")
 
@@ -473,14 +477,31 @@ def parse_args(default_suite: str = "all") -> argparse.Namespace:
     parser.add_argument("--pipeline-case", default="host_to_device_ffts_pipeline")
     parser.add_argument("--ce-case", default="host_to_device_ce")
     parser.add_argument("--multistream-case", default="host_to_device_ce_multi_stream")
-    parser.add_argument("--one-host-pipeline-case", default="one_host_to_all_device_ffts_pipeline")
-    parser.add_argument("--all-host-pipeline-case", default="all_host_to_all_device_ffts_pipeline")
     parser.add_argument(
-        "--one-malloc-host-multistream-case",
-        default="one_malloc_host_to_all_device_ce_multi_stream",
+        "--one-share-host-pipeline-case",
+        "--one-host-pipeline-case",
+        dest="one_share_host_pipeline_case",
+        default=DEFAULT_ONE_SHARE_HOST_PIPELINE_CASE,
+        help=(
+            "Pipeline case for the shared-host topology. "
+            "--one-host-pipeline-case is kept as a compatibility alias."
+        ),
     )
     parser.add_argument(
-        "--all-host-multistream-case", default="all_host_to_all_device_ce_multi_stream"
+        "--all-host-pipeline-case", default=DEFAULT_ALL_HOST_PIPELINE_CASE
+    )
+    parser.add_argument(
+        "--one-share-host-multistream-case",
+        "--one-malloc-host-multistream-case",
+        dest="one_share_host_multistream_case",
+        default=DEFAULT_ONE_SHARE_HOST_MULTISTREAM_CASE,
+        help=(
+            "Multi-stream CE case for the shared-host topology. "
+            "--one-malloc-host-multistream-case is kept as a compatibility alias."
+        ),
+    )
+    parser.add_argument(
+        "--all-host-multistream-case", default=DEFAULT_ALL_HOST_MULTISTREAM_CASE
     )
     parser.add_argument("--validate", action="store_true")
     parser.add_argument("--dry-run", action="store_true")

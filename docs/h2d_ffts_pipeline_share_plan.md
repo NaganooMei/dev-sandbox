@@ -32,7 +32,8 @@ python3 scripts/run_h2d_ffts_pipeline_share_exp3.py
 | `--exp3-devices` | `8` | 实验三多卡设备数 |
 | `--ffts-max-ready-lanes` | `8` | FFTS dispatcher ready lane 数 |
 | `--case-wait-sec` | `0.3` | 不同 case 之间的等待时间，避免连续运行时 CPU 侧压力互相影响 |
-| `--one-malloc-host-multistream-case` | `one_malloc_host_to_all_device_ce_multi_stream` | 实验三一块 aclrtMallocHost buffer 的 multi-stream CE 对照 |
+| `--one-share-host-pipeline-case` | `one_share_host_to_all_device_ffts_pipeline` | 实验三一块 shared host buffer 的 FFTS pipeline case |
+| `--one-share-host-multistream-case` | `one_share_host_to_all_device_ce_multi_stream` | 实验三一块 shared host buffer 的 multi-stream CE 对照 |
 | `--all-host-multistream-case` | `all_host_to_all_device_ce_multi_stream` | 实验三八块 host buffer 的 multi-stream CE 对照 |
 
 输出目录默认在 `logs/h2d_ffts_pipeline_share/<run-id>`，包含三类文件:
@@ -59,9 +60,9 @@ python3 scripts/run_h2d_ffts_pipeline_share_exp3.py
 | IO count | `1024` |
 | iterations | `128` |
 | device count | `8` |
-| 拓扑一 | `one_host_to_all_devices`: 8 卡同时读一块 host buffer |
+| 拓扑一 | `one_share_host_to_all_devices`: 8 卡同时读一块 shared host buffer |
 | 拓扑二 | `all_hosts_to_all_devices`: 8 卡同时读 8 块独立 host buffer |
-| 对比对象 | FFTS 1MiB pipeline、FFTS 2MiB pipeline、FFTS 全聚合不 pipeline、`one_malloc_host_to_all_device_ce_multi_stream`、`all_host_to_all_device_ce_multi_stream` |
+| 对比对象 | FFTS 1MiB pipeline、FFTS 2MiB pipeline、FFTS 全聚合不 pipeline、`one_share_host_to_all_device_ce_multi_stream`、`all_host_to_all_device_ce_multi_stream` |
 
 聚合规则:
 
@@ -137,7 +138,7 @@ sequenceDiagram
 ```mermaid
 flowchart TB
     subgraph T1["Topology A: one host buffer to 8 devices"]
-        H0["host buffer 0"] --> D0["device 0"]
+        H0["shared host buffer 0"] --> D0["device 0"]
         H0 --> D1["device 1"]
         H0 --> D2["device 2"]
         H0 --> D7["device 7"]
@@ -169,11 +170,11 @@ flowchart TB
 
 重点观察:
 
-- `one_host_to_all_devices` 下，一块 host buffer 被 8 卡同时读，适合观察 host 侧读压力和跨卡并发提交能力。
+- `one_share_host_to_all_devices` 下，一块 shared host buffer 被 8 卡同时读，适合观察 host 侧读压力和跨卡并发提交能力。
 - `all_hosts_to_all_devices` 下，每张卡读自己的 host buffer，适合观察更理想的多卡独立数据源场景。
 - 实验三扫描 `2K 8K 32K 64K`，用于观察多卡拓扑下小 IO 和中等 IO 的差异。
-- multi-stream CE 仍然是逐 fragment copy；脚本会跑 `one_malloc_host_to_all_device_ce_multi_stream` 和 `all_host_to_all_device_ce_multi_stream`。
-- `one_malloc_host_to_all_device_ce_multi_stream` 用一块 `aclrtMallocHost` host buffer，`all_host_to_all_device_ce_multi_stream` 用 8 块独立 `aclrtMallocHost` host buffer，二者用于隔离 host 数据源拓扑差异。
+- multi-stream CE 仍然是逐 fragment copy；脚本会跑 `one_share_host_to_all_device_ce_multi_stream` 和 `all_host_to_all_device_ce_multi_stream`。
+- `one_share_host_to_all_device_ce_multi_stream` 用一块 POSIX shared memory host buffer，`all_host_to_all_device_ce_multi_stream` 用 8 块独立 `aclrtMallocHost` host buffer，二者用于隔离 host 数据源拓扑差异。
 - multi-stream CE case 使用按设备并行提交，避免 8 卡 x 多 stream 被主线程串行提交放大。
 - FFTS pipeline 是每卡先聚合到 staging slot，再 split 到 device fragments。
 - 如果 FFTS 在两种拓扑下都能保持优势，说明方案不是只对单卡局部场景有效。
@@ -192,4 +193,4 @@ flowchart TB
 2. multi-stream CE 能缓解一部分并发问题，但本质仍是逐 fragment copy。
 3. FFTS full aggregate 证明“先聚合再 split”可以减少 H2D 小 IO 压力，但缺少 H2D 和 split 的 overlap。
 4. FFTS 1MiB/2MiB aggregate pipeline 通过双缓冲 staging slot，把下一批 object 的 H2D 和上一批 object 的 FFTS split 重叠起来，是这套方案的关键收益来源。
-5. 8 卡 one-buffer 和 eight-buffer 拓扑用于验证这个收益是否能进入真实多卡数据加载场景。
+5. 8 卡 shared-buffer 和 eight-buffer 拓扑用于验证这个收益是否能进入真实多卡数据加载场景。
