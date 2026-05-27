@@ -12,12 +12,13 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 
 
 DEFAULT_EXP1_SIZES = ["2K", "8K", "32K", "64K", "128K", "256K", "512K"]
-DEFAULT_EXP2_COUNTS = [10, 16, 32, 64, 128, 256, 512, 1024]
+DEFAULT_EXP1_COUNTS = [1024, 4096]
 DEFAULT_PIPELINE_TARGETS = ["1M", "2M"]
 
 STAT_RE = re.compile(
@@ -153,61 +154,37 @@ def make_specs(args: argparse.Namespace) -> List[RunSpec]:
     ]
 
     specs: List[RunSpec] = []
-    for size in args.exp1_sizes:
-        for variant in variants:
-            spec = RunSpec(
-                experiment="exp1_io_size_sweep",
-                axis=size,
-                topology="single_device",
-                io_size=size,
-                io_count=args.exp1_count,
-                devices=args.devices,
-                variant=variant,
-                object_frags=None,
-            )
-            specs.append(
-                RunSpec(
-                    spec.experiment,
-                    spec.axis,
-                    spec.topology,
-                    spec.io_size,
-                    spec.io_count,
-                    spec.devices,
-                    spec.variant,
-                    object_frags_for(spec),
+    for count in args.exp1_counts:
+        for size in args.exp1_sizes:
+            for variant in variants:
+                spec = RunSpec(
+                    experiment="exp1_io_size_sweep",
+                    axis=f"{size}_x{count}",
+                    topology="single_device",
+                    io_size=size,
+                    io_count=count,
+                    devices=args.devices,
+                    variant=variant,
+                    object_frags=None,
                 )
-            )
-
-    for count in args.exp2_counts:
-        for variant in variants:
-            spec = RunSpec(
-                experiment="exp2_io_count_sweep",
-                axis=str(count),
-                topology="single_device",
-                io_size=args.exp2_size,
-                io_count=count,
-                devices=args.devices,
-                variant=variant,
-                object_frags=None,
-            )
-            specs.append(
-                RunSpec(
-                    spec.experiment,
-                    spec.axis,
-                    spec.topology,
-                    spec.io_size,
-                    spec.io_count,
-                    spec.devices,
-                    spec.variant,
-                    object_frags_for(spec),
+                specs.append(
+                    RunSpec(
+                        spec.experiment,
+                        spec.axis,
+                        spec.topology,
+                        spec.io_size,
+                        spec.io_count,
+                        spec.devices,
+                        spec.variant,
+                        object_frags_for(spec),
+                    )
                 )
-            )
 
     exp3_topologies = [
         (
             "one_host_to_all_devices",
             args.one_host_pipeline_case,
-            [args.one_host_multistream_case, args.one_malloc_host_multistream_case],
+            [args.one_malloc_host_multistream_case],
         ),
         (
             "all_hosts_to_all_devices",
@@ -331,13 +308,17 @@ def write_plan(args: argparse.Namespace, specs: Iterable[RunSpec], out_dir: Path
     with plan_file.open("w", encoding="utf-8") as out:
         out.write("#!/usr/bin/env bash\n")
         out.write("set -euo pipefail\n\n")
-        for spec in specs:
+        specs = list(specs)
+        for index, spec in enumerate(specs):
             out.write(
                 f"# {spec.experiment} axis={spec.axis} topology={spec.topology} "
                 f"variant={spec.variant.name}\n"
             )
             out.write(shell_command(args, spec))
-            out.write("\n\n")
+            out.write("\n")
+            if index + 1 < len(specs) and args.case_wait_sec > 0:
+                out.write(f"sleep {args.case_wait_sec:g}\n")
+            out.write("\n")
     print(f"[plan] wrote {plan_file}")
 
 
@@ -420,26 +401,6 @@ def write_report(args: argparse.Namespace, out_dir: Path, summary_file: Path) ->
                 ],
             )
         )
-        out.write("\n\n## 实验二: 扫 IO 数量\n\n")
-        out.write(
-            markdown_table(
-                rows,
-                "exp2_io_count_sweep",
-                [
-                    ("IO Size", "io_size"),
-                    ("IO Count", "io_count"),
-                    ("Devices", "devices"),
-                    ("Variant", "variant"),
-                    ("Target Bytes", "target_object_bytes"),
-                    ("Object Frags", "object_frags"),
-                    ("Submit Avg(us)", "submit_avg_us"),
-                    ("Copy Avg(us)", "copy_avg_us"),
-                    ("Copy P50(us)", "copy_p50_us"),
-                    ("Copy P90(us)", "copy_p90_us"),
-                    ("BW(GB/s)", "bw_gbs"),
-                ],
-            )
-        )
         out.write("\n\n## 实验三: 8 卡同时读拓扑\n\n")
         out.write(
             markdown_table(
@@ -483,12 +444,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--devices", type=int, default=1)
     parser.add_argument("--iterations", type=int, default=128)
     parser.add_argument("--exp1-sizes", nargs="+", default=DEFAULT_EXP1_SIZES)
-    parser.add_argument("--exp1-count", type=int, default=1024)
-    parser.add_argument("--exp2-size", default="32K")
-    parser.add_argument("--exp2-counts", nargs="+", type=int, default=DEFAULT_EXP2_COUNTS)
+    parser.add_argument("--exp1-counts", nargs="+", type=int, default=DEFAULT_EXP1_COUNTS)
     parser.add_argument("--exp3-size", default="32K")
     parser.add_argument("--exp3-count", type=int, default=1024)
     parser.add_argument("--exp3-devices", type=int, default=8)
+    parser.add_argument("--case-wait-sec", type=float, default=0.3)
     parser.add_argument("--pipeline-targets", nargs="+", default=DEFAULT_PIPELINE_TARGETS)
     parser.add_argument("--target-object-bytes", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--ffts-max-ready-lanes", type=int, default=8)
@@ -497,9 +457,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--multistream-case", default="host_to_device_ce_multi_stream")
     parser.add_argument("--one-host-pipeline-case", default="one_host_to_all_device_ffts_pipeline")
     parser.add_argument("--all-host-pipeline-case", default="all_host_to_all_device_ffts_pipeline")
-    parser.add_argument(
-        "--one-host-multistream-case", default="one_host_to_all_device_ce_multi_stream"
-    )
     parser.add_argument(
         "--one-malloc-host-multistream-case",
         default="one_malloc_host_to_all_device_ce_multi_stream",
@@ -535,7 +492,7 @@ def main() -> int:
     with summary_file.open("w", encoding="utf-8", newline="") as target:
         writer = csv.DictWriter(target, SUMMARY_FIELDS, delimiter="\t", lineterminator="\n")
         writer.writeheader()
-        for spec in specs:
+        for index, spec in enumerate(specs):
             object_suffix = "none" if spec.object_frags is None else str(spec.object_frags)
             log_name = (
                 f"{spec.experiment}__{spec.axis}__{spec.variant.name}"
@@ -551,6 +508,8 @@ def main() -> int:
                 print(f"could not parse result row from {log_file}", file=sys.stderr)
                 return 3
             append_summary_rows(writer, args, spec, rows, log_file)
+            if index + 1 < len(specs) and args.case_wait_sec > 0:
+                time.sleep(args.case_wait_sec)
 
     write_report(args, out_dir, summary_file)
     print(f"[summary] wrote {summary_file}")

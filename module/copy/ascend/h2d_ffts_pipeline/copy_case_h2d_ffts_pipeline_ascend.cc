@@ -160,7 +160,7 @@ DEFINE_COPY_CASE(OneHost2AllDeviceFFTSPipelineCase, "one_host_to_all_device_ffts
     const auto effectiveObjectFrags = ctx.num == 0 ? objectFrags : std::min(objectFrags, ctx.num);
     const bool validationEnabled = FftsValidationEnabled();
 
-    AnonymousCopyBuffer srcBuffer{0, ctx.size, ctx.num};
+    HostCopyBuffer srcBuffer{0, ctx.size, ctx.num};
     InitializeHostPatternedBuffer(srcBuffer);
     std::vector<const CopyBuffer*> srcBuffers(ctx.nDevice, &srcBuffer);
     std::vector<const CopyBuffer*> dstBuffers(ctx.nDevice);

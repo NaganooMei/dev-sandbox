@@ -19,18 +19,16 @@ python3 scripts/run_h2d_ffts_pipeline_share_experiments.py
 | 参数 | 默认值 | 含义 |
 | --- | --- | --- |
 | `--copy-bin` | `./build/module/copy/copy` | benchmark 可执行文件 |
-| `--devices` | `1` | 实验一、实验二的单卡设备数 |
+| `--devices` | `1` | 实验一的单卡设备数 |
 | `--iterations` | `128` | 每个 case 的采样迭代次数 |
 | `--pipeline-targets` | `1M 2M` | FFTS pipeline 的 logical object 聚合目标 |
 | `--exp1-sizes` | `2K 8K 32K 64K 128K 256K 512K` | 实验一的 IO size 扫描点 |
-| `--exp1-count` | `1024` | 实验一固定 IO 数量 |
-| `--exp2-size` | `32K` | 实验二固定 IO size |
-| `--exp2-counts` | `10 16 32 64 128 256 512 1024` | 实验二的 IO 数量扫描点 |
+| `--exp1-counts` | `1024 4096` | 实验一的 IO 数量组 |
 | `--exp3-size` | `32K` | 实验三固定 IO size |
 | `--exp3-count` | `1024` | 实验三固定 IO 数量 |
 | `--exp3-devices` | `8` | 实验三多卡设备数 |
 | `--ffts-max-ready-lanes` | `8` | FFTS dispatcher ready lane 数 |
-| `--one-host-multistream-case` | `one_host_to_all_device_ce_multi_stream` | 实验三一块 mmap registered host buffer 的 multi-stream CE 对照 |
+| `--case-wait-sec` | `0.3` | 不同 case 之间的等待时间，避免连续运行时 CPU 侧压力互相影响 |
 | `--one-malloc-host-multistream-case` | `one_malloc_host_to_all_device_ce_multi_stream` | 实验三一块 aclrtMallocHost buffer 的 multi-stream CE 对照 |
 | `--all-host-multistream-case` | `all_host_to_all_device_ce_multi_stream` | 实验三八块 host buffer 的 multi-stream CE 对照 |
 
@@ -45,17 +43,7 @@ python3 scripts/run_h2d_ffts_pipeline_share_experiments.py
 | 维度 | 设置 |
 | --- | --- |
 | IO size | `2K 8K 32K 64K 128K 256K 512K` |
-| IO count | `1024` |
-| iterations | `128` |
-| device count | `1` |
-| 对比对象 | FFTS 1MiB pipeline、FFTS 2MiB pipeline、FFTS 全聚合不 pipeline、Ascend CE、Ascend multi-stream CE |
-
-实验二: 扫 IO 数量。
-
-| 维度 | 设置 |
-| --- | --- |
-| IO size | `32K` |
-| IO count | `10 16 32 64 128 256 512 1024` |
+| IO count | `1024 4096` |
 | iterations | `128` |
 | device count | `1` |
 | 对比对象 | FFTS 1MiB pipeline、FFTS 2MiB pipeline、FFTS 全聚合不 pipeline、Ascend CE、Ascend multi-stream CE |
@@ -70,7 +58,7 @@ python3 scripts/run_h2d_ffts_pipeline_share_experiments.py
 | device count | `8` |
 | 拓扑一 | `one_host_to_all_devices`: 8 卡同时读一块 host buffer |
 | 拓扑二 | `all_hosts_to_all_devices`: 8 卡同时读 8 块独立 host buffer |
-| 对比对象 | FFTS 1MiB pipeline、FFTS 2MiB pipeline、FFTS 全聚合不 pipeline、`one_host_to_all_device_ce_multi_stream`、`one_malloc_host_to_all_device_ce_multi_stream`、`all_host_to_all_device_ce_multi_stream` |
+| 对比对象 | FFTS 1MiB pipeline、FFTS 2MiB pipeline、FFTS 全聚合不 pipeline、`one_malloc_host_to_all_device_ce_multi_stream`、`all_host_to_all_device_ce_multi_stream` |
 
 聚合规则:
 
@@ -171,38 +159,28 @@ flowchart TB
 注意点:
 
 - `2K x 1024` 正好是 2MiB，2MiB pipeline 和 full aggregate 会落到同一个 object 粒度，预期差距很小。
-- `32K x 1024` 是 32MiB，总体数据量足够大，同时 IO size 又比较常规，适合作为实验二和实验三的固定点。
+- `32K x 1024` 是 32MiB，总体数据量足够大，同时 IO size 又比较常规，适合作为实验三的固定点；`4096` 组用于观察更大 IO 数量下 pipeline 和 CE 路径的稳定性。
 - `512K` 时每个 2MiB object 只有 4 个 fragment，pipeline 的 object 数量减少，更适合看大 IO 下 FFTS split 的固定成本。
 
-### 7. 实验二解读: IO count sweep
-
-重点观察:
-
-- IO 数量很少时，FFTS 聚合和 pipeline 是否被准备成本抵消。
-- IO 数量增长到 64、128、256 之后，1MiB/2MiB pipeline 是否开始稳定优于 CE 路径。
-- IO 数量接近 1024 时，full aggregate 是否因为只有一个大 object 而缺少 overlap，pipeline 是否能继续保持带宽。
-
-### 8. 实验三解读: 8 卡同时读
+### 7. 实验三解读: 8 卡同时读
 
 重点观察:
 
 - `one_host_to_all_devices` 下，一块 host buffer 被 8 卡同时读，适合观察 host 侧读压力和跨卡并发提交能力。
 - `all_hosts_to_all_devices` 下，每张卡读自己的 host buffer，适合观察更理想的多卡独立数据源场景。
-- multi-stream CE 仍然是逐 fragment copy；脚本会分别跑 `one_host_to_all_device_ce_multi_stream`、`one_malloc_host_to_all_device_ce_multi_stream` 和 `all_host_to_all_device_ce_multi_stream`。
-- `one_host_to_all_device_ce_multi_stream` 用 mmap + `aclrtHostRegisterV2` 的 anonymous buffer，`one_malloc_host_to_all_device_ce_multi_stream` 用 `aclrtMallocHost` buffer，二者用于隔离 host 内存来源差异。
-- 这两个 multi-stream CE case 使用按设备并行提交，避免 8 卡 x 多 stream 被主线程串行提交放大。
+- multi-stream CE 仍然是逐 fragment copy；脚本会跑 `one_malloc_host_to_all_device_ce_multi_stream` 和 `all_host_to_all_device_ce_multi_stream`。
+- `one_malloc_host_to_all_device_ce_multi_stream` 用一块 `aclrtMallocHost` host buffer，`all_host_to_all_device_ce_multi_stream` 用 8 块独立 `aclrtMallocHost` host buffer，二者用于隔离 host 数据源拓扑差异。
+- multi-stream CE case 使用按设备并行提交，避免 8 卡 x 多 stream 被主线程串行提交放大。
 - FFTS pipeline 是每卡先聚合到 staging slot，再 split 到 device fragments。
 - 如果 FFTS 在两种拓扑下都能保持优势，说明方案不是只对单卡局部场景有效。
 
-### 9. 分享时推荐图表
+### 8. 分享时推荐图表
 
-- 图一: 横轴 IO size，纵轴 BW(GB/s)，展示实验一五条路径。
-- 图二: 横轴 IO count，纵轴 BW(GB/s)，展示实验二五条路径。
-- 图三: 横轴 IO size，纵轴 Copy Avg(us)，解释带宽变化背后的时延。
-- 图四: 横轴 IO count，纵轴 Submit Avg(us)，解释 host 提交开销。
-- 图五: 横轴 8 卡拓扑，纵轴 BW(GB/s)，展示 FFTS 聚合与 multi-stream CE 的多卡差异。
+- 图一: 横轴 IO size，纵轴 BW(GB/s)，按 IO count 分组展示实验一五条路径。
+- 图二: 横轴 IO size，纵轴 Copy Avg(us)，按 IO count 分组解释带宽变化背后的时延。
+- 图三: 横轴 8 卡拓扑，纵轴 BW(GB/s)，展示 FFTS 聚合与 multi-stream CE 的多卡差异。
 
-### 10. 预期结论表达
+### 9. 预期结论表达
 
 如果实验结果符合预期，可以按下面逻辑组织结论:
 
