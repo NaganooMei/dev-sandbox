@@ -99,7 +99,6 @@ int main(int argc, char const* argv[])
         ArgsParser::Help(argv[0]);
         return -1;
     }
-    CopyRuntime runtime;
     const auto cases = CopyCaseFactory::Instance().Filter(args.names);
     if (cases.empty()) {
         for (auto& c : CopyCaseFactory::Instance().AllCases()) {
@@ -107,6 +106,13 @@ int main(int argc, char const* argv[])
         }
         return -1;
     }
-    for (auto& c : cases) { c->Run(args.ctx); }
+    for (auto& c : cases) {
+        if (c->RequiresRuntimeInitialization()) {
+            CopyRuntime runtime;
+            c->Run(args.ctx);
+        } else {
+            c->Run(args.ctx);
+        }
+    }
     return 0;
 }

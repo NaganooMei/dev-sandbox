@@ -31,6 +31,7 @@
 #include <string>
 #include <vector>
 #include "ascend/copy_buffer_ascend.h"
+#include "ascend/forked_copy_runner_ascend.h"
 #include "copy_case.h"
 #include "copy_instance_h2d_ffts_pipeline_ascend.h"
 
@@ -151,6 +152,35 @@ DEFINE_COPY_CASE(Host2DeviceFFTSPipelineCase, "host_to_device_ffts_pipeline",
     ShowPipelineResult(*this, result, effectiveObjectFrags);
 }
 
+DEFINE_COPY_CASE_NO_RUNTIME(
+    OneShareHost2AllDeviceFFTSPipelineCase, "one_share_host_to_all_device_ffts_pipeline",
+    "copy one shared host buffer to all fragmented device buffers with h2d and ffts pipeline using fork submit",
+    ctx)
+{
+    CopyResult result;
+    const auto objectFrags = ReadFftsPipelineObjectFrags();
+    const auto effectiveObjectFrags = ctx.num == 0 ? objectFrags : std::min(objectFrags, ctx.num);
+    const bool validationEnabled = FftsValidationEnabled();
+
+    SharedHostRegion srcRegion{"one_share_host_to_all_device_ffts_pipeline", 0, ctx.size,
+                               ctx.num};
+    InitializeHostPatternedBuffer(srcRegion);
+    result.Push(ascend_copy::RunForkedCopyBatch(
+        ctx, srcRegion.Name(), "acl::device_frag::all", "h2d_ffts_pipeline-FORK",
+        [&](size_t device) {
+            SharedHostCopyBuffer srcBuffer{srcRegion.ShmName(), device, ctx.size, ctx.num};
+            FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+            ResetBuffer(dstBuffer);
+
+            H2DFFTSPipelineCopyInstance instance{ctx.iter, false, objectFrags};
+            auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer);
+            ValidateDeviceBufferIfEnabled(dstBuffer, validationEnabled);
+            return childResult;
+        }));
+    PrintValidationPassIfEnabled(*this, validationEnabled);
+    ShowPipelineResult(*this, result, effectiveObjectFrags);
+}
+
 DEFINE_COPY_CASE(OneHost2AllDeviceFFTSPipelineCase, "one_host_to_all_device_ffts_pipeline",
                  "copy one host buffer to all fragmented device buffers with h2d and ffts pipeline",
                  ctx)
@@ -179,31 +209,29 @@ DEFINE_COPY_CASE(OneHost2AllDeviceFFTSPipelineCase, "one_host_to_all_device_ffts
     ShowPipelineResult(*this, result, effectiveObjectFrags);
 }
 
-DEFINE_COPY_CASE(AllHost2AllDeviceFFTSPipelineCase, "all_host_to_all_device_ffts_pipeline",
-                 "copy all host buffers to all fragmented device buffers with h2d and ffts pipeline",
-                 ctx)
+DEFINE_COPY_CASE_NO_RUNTIME(
+    AllHost2AllDeviceFFTSPipelineCase, "all_host_to_all_device_ffts_pipeline",
+    "copy all host buffers to all fragmented device buffers with h2d and ffts pipeline using fork submit",
+    ctx)
 {
     CopyResult result;
     const auto objectFrags = ReadFftsPipelineObjectFrags();
     const auto effectiveObjectFrags = ctx.num == 0 ? objectFrags : std::min(objectFrags, ctx.num);
     const bool validationEnabled = FftsValidationEnabled();
 
-    std::vector<const CopyBuffer*> srcBuffers(ctx.nDevice);
-    std::vector<const CopyBuffer*> dstBuffers(ctx.nDevice);
-    for (size_t device = 0; device < ctx.nDevice; device++) {
-        srcBuffers[device] = new HostCopyBuffer{device, ctx.size, ctx.num};
-        dstBuffers[device] = new FragmentedDeviceCopyBuffer{device, ctx.size, ctx.num};
-        InitializeHostPatternedBuffer(*srcBuffers[device]);
-        ResetBuffer(*dstBuffers[device]);
-    }
+    result.Push(ascend_copy::RunForkedCopyBatch(
+        ctx, "acl::host::all", "acl::device_frag::all", "h2d_ffts_pipeline-FORK",
+        [&](size_t device) {
+            HostCopyBuffer srcBuffer{device, ctx.size, ctx.num};
+            FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+            InitializeHostPatternedBuffer(srcBuffer);
+            ResetBuffer(dstBuffer);
 
-    H2DFFTSPipelineCopyInstance instance{ctx.iter, false, objectFrags};
-    result.Push(instance.DoCopyBatch(srcBuffers, dstBuffers));
-    for (size_t device = 0; device < ctx.nDevice; device++) {
-        ValidateDeviceBufferIfEnabled(*dstBuffers[device], validationEnabled);
-        delete srcBuffers[device];
-        delete dstBuffers[device];
-    }
+            H2DFFTSPipelineCopyInstance instance{ctx.iter, false, objectFrags};
+            auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer);
+            ValidateDeviceBufferIfEnabled(dstBuffer, validationEnabled);
+            return childResult;
+        }));
     PrintValidationPassIfEnabled(*this, validationEnabled);
     ShowPipelineResult(*this, result, effectiveObjectFrags);
 }

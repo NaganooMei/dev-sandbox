@@ -24,8 +24,13 @@
 #ifndef COPY_BUFFER_ASCEND_H
 #define COPY_BUFFER_ASCEND_H
 
+#include <cstdint>
 #include <cstring>
+#include <fcntl.h>
+#include <string>
 #include <sys/mman.h>
+#include <unistd.h>
+#include <utility>
 #include <vector>
 #include "copy_buffer.h"
 #include "error_handle_ascend.h"
@@ -72,6 +77,72 @@ public:
         }
     }
     std::string Name() const override { return "acl::anon::" + std::to_string(device_); }
+};
+
+class SharedHostRegion : public CopyBuffer {
+public:
+    SharedHostRegion(std::string tag, size_t device, size_t size, size_t number)
+        : CopyBuffer{device, size, number}
+    {
+        shmName_ = "/copy_ascend_" + std::to_string(getpid()) + "_" + tag + "_" +
+                   std::to_string(reinterpret_cast<std::uintptr_t>(this));
+        const auto total = size * number;
+        const auto fd = shm_open(shmName_.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
+        ASSERT(fd != -1);
+        ASSERT(ftruncate(fd, total) == 0);
+        constexpr auto prot = PROT_READ | PROT_WRITE;
+        constexpr auto flags = MAP_SHARED | MAP_POPULATE;
+        addr_ = mmap(nullptr, total, prot, flags, fd, 0);
+        const auto closeStatus = close(fd);
+        ASSERT(closeStatus == 0);
+        ASSERT(addr_ != MAP_FAILED);
+        std::memset(addr_, 's', total);
+    }
+
+    ~SharedHostRegion() override
+    {
+        if (addr_) { munmap(addr_, size_ * number_); }
+        if (!shmName_.empty()) { shm_unlink(shmName_.c_str()); }
+    }
+
+    const std::string& ShmName() const { return shmName_; }
+    std::string Name() const override { return "acl::shm::0"; }
+
+private:
+    std::string shmName_;
+};
+
+class SharedHostCopyBuffer : public CopyBuffer {
+public:
+    SharedHostCopyBuffer(std::string shmName, size_t device, size_t size, size_t number)
+        : CopyBuffer{device, size, number}, shmName_{std::move(shmName)}
+    {
+        const auto total = size * number;
+        const auto fd = shm_open(shmName_.c_str(), O_RDWR, 0600);
+        ASSERT(fd != -1);
+        constexpr auto prot = PROT_READ | PROT_WRITE;
+        constexpr auto flags = MAP_SHARED | MAP_POPULATE;
+        addr_ = mmap(nullptr, total, prot, flags, fd, 0);
+        const auto closeStatus = close(fd);
+        ASSERT(closeStatus == 0);
+        ASSERT(addr_ != MAP_FAILED);
+        ASCEND_ASSERT(aclrtSetDevice(device_));
+        ASCEND_ASSERT(aclrtHostRegisterV2(addr_, total, ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED));
+    }
+
+    ~SharedHostCopyBuffer() override
+    {
+        if (addr_) {
+            ASCEND_ASSERT(aclrtSetDevice(device_));
+            ASCEND_ASSERT(aclrtHostUnregister(addr_));
+            munmap(addr_, size_ * number_);
+        }
+    }
+
+    std::string Name() const override { return "acl::shm::0"; }
+
+private:
+    std::string shmName_;
 };
 
 class DeviceCopyBuffer : public CopyBuffer {
