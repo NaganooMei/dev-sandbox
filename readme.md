@@ -1,6 +1,6 @@
-# dev-sandbox
+# dev-sandbox Ascend copy benchmark
 
-C++17 性能测试项目，使用 CMake 构建，支持 CUDA、Ascend 和 CPU 模拟后端。
+这个分支的 README 只整理 Ascend copy 相关 case，用来观察 H2D、D2D、单 host 多卡读、POSIX shared memory、HugeTLB shared memory、multi-stream 和 H2D FFTS pipeline 的带宽表现。
 
 ## 构建
 
@@ -15,166 +15,162 @@ cmake --build build -j
 ./build/module/copy/copy
 ```
 
-## copy 公共参数
-
-所有 `copy` case 都通过 `-t` 指定 case 名，其他参数控制数据规模、迭代次数和设备数。
-
-```text
--t <name>   case 名称，可重复指定多个 -t
--s <size>   单个数据块大小，例如 16K、1M，默认 512M
--n <count>  每个 buffer 内的数据块数量，默认 8
--i <count>  迭代次数，默认 128
--d <count>  设备数量，默认 8
-```
-
-查看当前后端可用 case：
+查看当前构建里实际注册的 case：
 
 ```bash
 ./build/module/copy/copy -t unknown
 ```
 
-## copy case 总览
+## 通用参数
 
-### CUDA / Ascend CE
+```text
+-t <name>   case 名称，可重复指定多个 -t
+-s <size>   单个数据块大小，例如 16K、1M、512M
+-n <count>  每个 buffer 里的数据块数量
+-i <count>  统计迭代次数
+-d <count>  设备数量
+```
 
-`CE` 表示使用设备 copy engine 做拷贝。CUDA 和 Ascend 后端会根据当前构建环境注册各自支持的
-case。
+`Size(KB)` 是单个数据块大小，`Count` 是一次统计结果覆盖的数据块数量。聚合 case 的 `Count` 可能会等于 `-n * -d`，per-device case 则通常每张卡一行，每行 `Count = -n`。
 
-| case | 后端 | 传输方向 | 说明 |
+## Case 分类
+
+### 基础 CE
+
+这些 case 用 Ascend copy engine 做基础拷贝，适合做单卡或逐卡基线。
+
+| case | 传输方向 | 输出口径 | 说明 |
 | --- | --- | --- | --- |
-| `host_to_device_ce` | CUDA / Ascend | host -> device | 逐设备 H2D 拷贝 |
-| `host_to_device_batch_ce` | CUDA / Ascend | host -> device | 使用 batch CE 提交 H2D 拷贝 |
-| `one_share_host_to_all_device_ce` | Ascend | shared host -> all devices | 一块 POSIX shared memory host buffer 通过 fork fan-out 到所有 device |
-| `one_host_to_all_device_ce` | CUDA / Ascend | host0 -> all devices | 同一份 host buffer 依次拷贝到所有 device |
-| `all_host_to_all_device_ce` | CUDA / Ascend | host[i] -> device[i] | 多个 host/device buffer 拷贝到对应 device；Ascend 通过 fork 并发提交 |
-| `device_to_device_ce` | CUDA / Ascend | device -> device | 单设备内 D2D 拷贝 |
-| `one_device_to_all_device_ce` | CUDA / Ascend | device0 -> all devices | 同一份 device buffer 依次拷贝到所有 device |
-| `anonymous_to_device_ce` | CUDA / Ascend | anonymous host -> device | 从匿名 host 内存拷贝到 device |
-| `huge_shm_to_device_ce` | Ascend | HugeTLB shared host -> device | 通过 memfd HugeTLB 创建 shared host buffer，逐设备 H2D 拷贝 |
-| `one_huge_shm_to_all_device_ce` | Ascend | one HugeTLB shared host -> all devices | 父进程创建一块 HugeTLB shared host buffer，子进程继承 fd 后 fork fan-out 到所有 device |
+| `host_to_device_ce` | host -> device | 每张卡一行 | 逐设备 H2D CE 拷贝 |
+| `host_to_device_batch_ce` | host -> device | 每张卡一行 | 单卡内使用 `aclrtMemcpyBatchAsync` 提交 H2D |
+| `device_to_device_ce` | device -> device | 每张卡一行 | 单设备内 D2D CE 拷贝 |
+| `one_device_to_all_device_ce` | device0 -> all devices | 每张卡一行 | 同一块 device0 buffer 依次拷贝到所有 device |
+| `anonymous_to_device_ce` | anonymous host -> device | 每张卡一行 | 匿名 host 内存注册后拷贝到 device |
 
-### CUDA 专属
+常用基线：
 
-| case | 传输方向 | 说明 |
-| --- | --- | --- |
-| `device_to_host_ce` | device -> host | 逐设备 D2H 拷贝 |
-| `device_to_host_batch_ce` | device -> host | 使用 batch CE 提交 D2H 拷贝 |
-| `host_to_device_sm` | host -> device | 使用 CUDA SM kernel 做 H2D 拷贝 |
-| `device_to_host_sm` | device -> host | 使用 CUDA SM kernel 做 D2H 拷贝 |
-| `one_host_to_all_device_sm` | host0 -> all devices | 同一份 host buffer 通过 SM 拷贝到所有 device |
-| `device_to_anonymous_ce` | device -> anonymous host | 从 device 拷贝到匿名 host 内存 |
-| `anonymous_to_device_sm` | anonymous host -> device | 使用 SM 从匿名 host 内存拷贝到 device |
-| `device_to_anonymous_sm` | device -> anonymous host | 使用 SM 从 device 拷贝到匿名 host 内存 |
+```bash
+./build/module/copy/copy -t host_to_device_ce -s 1M -n 64 -i 100 -d 8
+```
 
-### Ascend 专属
+### 单 Host 多卡 CE
 
-| case | 传输方向 | 说明 |
-| --- | --- | --- |
-| `host_to_device_ce_multi_stream` | host -> device | 使用多 stream 提交 H2D 拷贝 |
-| `one_share_host_to_all_device_ce_multi_stream` | shared host -> all devices | 一块 POSIX shared memory host buffer 通过 fork fan-out 到所有 device，单卡内使用多 stream |
-| `one_host_to_all_device_ce_multi_stream` | host0 -> all devices | 同一份 aclrtMallocHost host0 buffer 通过多 stream 拷贝到所有 device |
-| `all_host_to_all_device_ce_multi_stream` | host[i] -> device[i] | 多个 host/device buffer 通过 fork 并发提交，单卡内使用多 stream |
+这一组专门用来看“同一份 host 数据被多卡读取”时是否发生带宽冲突。名字相近，但语义不同。
 
-### Ascend FFTS Pipeline
+| case | 源 buffer | 提交方式 | 输出口径 | 用途 |
+| --- | --- | --- | --- | --- |
+| `one_host_to_all_device_ce` | 一块 `aclrtMallocHost` host0 buffer | 主进程逐卡顺序执行 | 每张卡一行 | 顺序读基线，不是多卡同时读 |
+| `one_host_to_all_device_ce_batch` | 一块 `aclrtMallocHost` host0 buffer | 主进程一次 `DoCopyBatch` 覆盖所有 device | 聚合一行 | 同一块 host0 同时发往多卡的聚合带宽 |
+| `one_share_host_to_all_device_ce` | 一块 POSIX shared memory host buffer | fork fan-out，每个子进程一张卡 | 聚合一行 | 多进程同时读同一块 shared host 的整体表现 |
+| `one_share_host_to_all_device_ce_per_device` | 一块 POSIX shared memory host buffer | fork fan-out，每个子进程一张卡 | 每张卡一行 | 多进程同时读同一块 shared host 时观察每张卡带宽 |
+| `all_host_to_all_device_ce` | 每张卡各自一块 host buffer | fork fan-out，每个子进程一张卡 | 聚合一行 | 多卡并发但源 buffer 不共享，用来区分共享源冲突和普通并发开销 |
 
-Ascend FFTS pipeline case 注册在 `copy` 主程序中。Ascend 后端可用且系统检测到 FFTS 头文件和
-`libruntime.so` 时，才会编译这个 case。
+建议对比：
 
-| case | 传输方向 | 说明 |
-| --- | --- | --- |
-| `host_to_device_ffts_pipeline` | host -> fragmented device | 逐设备 H2D 写入双缓冲 device staging slot，再用 FFTS split 到多个 device fragment |
-| `huge_shm_to_device_ffts_pipeline` | HugeTLB shared host -> fragmented device | 通过 memfd HugeTLB 创建 shared host buffer，再走 H2D FFTS pipeline |
-| `one_share_host_to_all_device_ffts_pipeline` | shared host -> all fragmented devices | 一块 POSIX shared memory host buffer 通过 fork fan-out 到所有 fragmented device，单卡内使用 H2D FFTS pipeline |
-| `one_huge_shm_to_all_device_ffts_pipeline` | one HugeTLB shared host -> all fragmented devices | 父进程创建一块 HugeTLB shared host buffer，子进程继承 fd 后 fork fan-out 到所有 fragmented device |
-| `one_host_to_all_device_ffts_pipeline` | host0 -> all fragmented devices | 同一份 host0 buffer 通过 H2D FFTS pipeline 拷贝到所有 device |
-| `all_host_to_all_device_ffts_pipeline` | host[i] -> fragmented device[i] | 多个 host/device buffer 通过 fork 并发提交 H2D FFTS pipeline |
+```bash
+./build/module/copy/copy -t one_host_to_all_device_ce -s 1M -n 64 -i 100 -d 8
+./build/module/copy/copy -t one_host_to_all_device_ce_batch -s 1M -n 64 -i 100 -d 8
+./build/module/copy/copy -t one_share_host_to_all_device_ce_per_device -s 1M -n 64 -i 100 -d 8
+./build/module/copy/copy -t all_host_to_all_device_ce -s 1M -n 64 -i 100 -d 8
+```
 
-相关环境变量：
+### HugeTLB Shared Host
 
-- `COPY_FFTS_VALIDATE` 控制是否做正确性校验。设置为 `1`、`true`、`TRUE`、`on` 或 `ON` 时，case 会校验每个 device fragment；全部通过后输出 `PASS`。
-- `COPY_FFTS_PIPELINE_OBJECT_FRAGS` 控制每个 logical object 包含多少个 fragment，默认值为 `8`。它影响 H2D staging 的 object 粒度，也影响一次 FFTS split 覆盖的 fragment 数量。
-- `FFTS_MAX_READY_LANES` 控制 FFTS dispatcher 中一个 FFTS task 初始 ready 的 SDMA context 数量，默认值为 `8`。它不改变 logical object 大小，只影响 dispatcher 内部 ready lane 组织方式。
+HugeTLB case 使用 `memfd_create` 搭配 `MFD_HUGETLB` 和 `MFD_HUGE_2MB` 创建 2 MiB HugeTLB 页，不需要挂载 hugetlbfs。宿主机需要提前预留 HugeTLB 页。
 
-HugeTLB shared host case 使用 `memfd_create` 搭配 `MFD_HUGETLB` 和 `MFD_HUGE_2MB` 创建大页 fd，不需要额外挂载 hugetlbfs。运行前宿主机需要预留 HugeTLB 页，例如：
+| case | 源 buffer | 提交方式 | 输出口径 | 说明 |
+| --- | --- | --- | --- | --- |
+| `huge_shm_to_device_ce` | 每次创建一块 HugeTLB shared host buffer | 逐设备执行 | 每张卡一行 | HugeTLB H2D CE 基线 |
+| `one_huge_shm_to_all_device_ce` | 父进程创建一块 HugeTLB shared host buffer | fork fan-out，每个子进程继承 fd | 聚合一行 | 多卡同时读同一块 HugeTLB shared host 的整体表现 |
+| `one_huge_shm_to_all_device_ce_per_device` | 父进程创建一块 HugeTLB shared host buffer | fork fan-out，每个子进程继承 fd | 每张卡一行 | 多卡同时读同一块 HugeTLB shared host 时观察每张卡带宽 |
+
+预留 HugeTLB 页示例：
 
 ```bash
 echo 8192 > /proc/sys/vm/nr_hugepages
 ```
 
-运行时可以观察宿主机 HugeTLB 使用量：
+运行时观察 HugeTLB 使用量：
 
 ```bash
 watch -n 0.2 'grep -i Huge /proc/meminfo'
 ```
 
-case 持有 buffer 时，`HugePages_Free` 会下降；进程退出并释放映射后会恢复。这个路径使用 memfd HugeTLB，通常不会让 `ShmemHugePages` 增加。
+重点看 `HugePages_Free`。例如 `-s 1M -n 64` 会申请 64 MiB，2 MiB huge page 下会消耗 32 页。这个 memfd HugeTLB 路径通常不会让 `ShmemHugePages` 增加。
 
-HugeTLB CE smoke：
-
-```bash
-./build/module/copy/copy -t one_huge_shm_to_all_device_ce -s 2M -n 64 -i 16 -d 8
-```
-
-HugeTLB FFTS pipeline smoke：
+建议对比：
 
 ```bash
-COPY_FFTS_VALIDATE=1 COPY_FFTS_PIPELINE_OBJECT_FRAGS=8 \
-./build/module/copy/copy -t one_huge_shm_to_all_device_ffts_pipeline -s 32K -n 1024 -i 16 -d 8
+./build/module/copy/copy -t one_huge_shm_to_all_device_ce -s 1M -n 64 -i 100 -d 8
+./build/module/copy/copy -t one_huge_shm_to_all_device_ce_per_device -s 1M -n 64 -i 100 -d 8
 ```
 
-最小正确性验证：
+### Multi-Stream CE
+
+multi-stream case 在单卡内使用多个 stream 提交 H2D。当前 stream 数在代码中固定为 48。
+
+| case | 源 buffer | 提交方式 | 输出口径 | 说明 |
+| --- | --- | --- | --- | --- |
+| `host_to_device_ce_multi_stream` | 每张卡各自一块 host buffer | 单卡多 stream | 每张卡一行 | 单卡 multi-stream H2D 基线 |
+| `one_host_to_all_device_ce_multi_stream` | 一块 `aclrtMallocHost` host0 buffer | 主进程一次 batch 覆盖所有 device，单卡内多 stream | 聚合一行 | 同一块 host0 同时发往多卡，观察 multi-stream 聚合表现 |
+| `one_share_host_to_all_device_ce_multi_stream` | 一块 POSIX shared memory host buffer | fork fan-out，单卡内多 stream | 聚合一行 | shared host 多进程 fan-out + 单卡 multi-stream |
+| `all_host_to_all_device_ce_multi_stream` | 每张卡各自一块 host buffer | fork fan-out，单卡内多 stream | 聚合一行 | 非共享源的多卡并发 multi-stream |
+
+建议和普通 CE batch 对比：
+
+```bash
+./build/module/copy/copy -t one_host_to_all_device_ce_batch -s 1M -n 64 -i 100 -d 8
+./build/module/copy/copy -t one_host_to_all_device_ce_multi_stream -s 1M -n 64 -i 100 -d 8
+```
+
+### H2D FFTS Pipeline
+
+这一组只有在构建环境检测到 Ascend FFTS 头文件和 `libruntime.so` 时才会编译。它把 host 数据先 H2D 写入 device staging buffer，再用 FFTS split 到 fragmented device buffer。
+
+| case | 源 buffer | 目标 buffer | 输出口径 | 说明 |
+| --- | --- | --- | --- | --- |
+| `host_to_device_ffts_pipeline` | 每张卡各自一块 host buffer | fragmented device | 每张卡一行 | H2D FFTS pipeline 基线 |
+| `huge_shm_to_device_ffts_pipeline` | 每次创建一块 HugeTLB shared host buffer | fragmented device | 每张卡一行 | HugeTLB 源的 H2D FFTS pipeline |
+| `one_host_to_all_device_ffts_pipeline` | 一块 host0 buffer | fragmented device | 聚合一行 | 同一块 host0 发往所有 device |
+| `one_share_host_to_all_device_ffts_pipeline` | 一块 POSIX shared memory host buffer | fragmented device | 聚合一行 | POSIX shared host fork fan-out |
+| `one_huge_shm_to_all_device_ffts_pipeline` | 一块 HugeTLB shared host buffer | fragmented device | 聚合一行 | HugeTLB shared host fork fan-out |
+| `all_host_to_all_device_ffts_pipeline` | 每张卡各自一块 host buffer | fragmented device | 聚合一行 | 非共享源的多卡 fan-out |
+
+相关环境变量：
+
+```text
+COPY_FFTS_VALIDATE=1
+COPY_FFTS_PIPELINE_OBJECT_FRAGS=8
+FFTS_MAX_READY_LANES=8
+```
+
+`COPY_FFTS_VALIDATE` 控制正确性校验。`COPY_FFTS_PIPELINE_OBJECT_FRAGS` 控制一个 logical object 包含多少个 fragment。`FFTS_MAX_READY_LANES` 控制 FFTS dispatcher 初始 ready 的 SDMA context 数量。
+
+正确性 smoke：
 
 ```bash
 COPY_FFTS_VALIDATE=1 \
 ./build/module/copy/copy -t host_to_device_ffts_pipeline -s 32K -n 32 -i 4 -d 1
 ```
 
-性能 smoke：
+HugeTLB FFTS smoke：
 
 ```bash
-COPY_FFTS_VALIDATE=0 COPY_FFTS_PIPELINE_OBJECT_FRAGS=8 \
-./build/module/copy/copy -t all_host_to_all_device_ffts_pipeline -s 32K -n 1024 -i 128 -d 1
+COPY_FFTS_VALIDATE=1 COPY_FFTS_PIPELINE_OBJECT_FRAGS=8 \
+./build/module/copy/copy -t one_huge_shm_to_all_device_ffts_pipeline -s 32K -n 1024 -i 16 -d 8
 ```
 
-### GDR
+## 单源多卡冲突排查顺序
 
-GDR case 注册在 `copy` 主程序中。CUDA 后端可用且系统检测到 `libibverbs` 头文件和库时，
-才会编译 GDR case。
-
-| case | 传输方向 | 说明 |
-| --- | --- | --- |
-| `host_to_device_gdr` | host -> device | 通过 RDMA write 逐设备写入对应 GPU |
-| `one_host_to_all_device_gdr` | host0 -> all devices | 同一块 host buffer 向所有 GPU 并发提交 RDMA write |
-| `all_host_to_all_device_gdr` | host[i] -> device[i] | 每张卡对应独立 host/device buffer，并发提交 RDMA write |
-
-### 模拟后端
-
-| case | 传输方向 | 说明 |
-| --- | --- | --- |
-| `host_to_anonymous_memcpy` | host -> anonymous host | CPU `memcpy` 模拟 host 到匿名内存 |
-| `shm_to_all_host_memcpy` | shared memory -> all hosts | CPU `memcpy` 模拟共享内存到多个 host buffer |
-
-## 环境变量
-
-### GDR_NICS
-
-GDR 使用 `GDR_NICS` 环境变量指定 GPU 与 RDMA 网卡的映射关系。
-
-规则：
-
-- 使用逗号分隔网卡名，不要写空格。
-- 顺序按 device id 从 0 开始一一对应。
-- 网卡数量必须与 `-d <count>` 指定的设备数量一致。
-
-未设置 `GDR_NICS` 时使用默认映射：
+建议用下面顺序排查，每条命令单独起一个新进程跑，避免前一个 case 的 runtime 状态影响后一个 case：
 
 ```bash
-mlx5_0,mlx5_2,mlx5_4,mlx5_6,mlx5_8,mlx5_10,mlx5_12,mlx5_14
+./build/module/copy/copy -t one_host_to_all_device_ce -s 1M -n 64 -i 100 -d 8
+./build/module/copy/copy -t one_host_to_all_device_ce_batch -s 1M -n 64 -i 100 -d 8
+./build/module/copy/copy -t one_share_host_to_all_device_ce_per_device -s 1M -n 64 -i 100 -d 8
+./build/module/copy/copy -t one_huge_shm_to_all_device_ce_per_device -s 1M -n 64 -i 100 -d 8
+./build/module/copy/copy -t all_host_to_all_device_ce -s 1M -n 64 -i 100 -d 8
+./build/module/copy/copy -t one_host_to_all_device_ce_multi_stream -s 1M -n 64 -i 100 -d 8
 ```
 
-8 卡示例：
-
-```bash
-GDR_NICS=mlx5_0,mlx5_2,mlx5_4,mlx5_6,mlx5_8,mlx5_10,mlx5_12,mlx5_14 \
-./build/module/copy/copy -t all_host_to_all_device_gdr -s 16K -n 512 -i 128 -d 8
-```
+读结果时先分清输出口径：`one_host_to_all_device_ce` 是顺序逐卡基线；`one_host_to_all_device_ce_batch` 是同进程聚合；`*_per_device` 是 fork 并发但每卡一行；`all_host_to_all_device_*` 是每张卡独立源 buffer。
