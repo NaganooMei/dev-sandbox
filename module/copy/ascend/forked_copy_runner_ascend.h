@@ -223,9 +223,8 @@ inline CopyResult::Result MergeForkedResults(std::vector<CopyResult::Result>&& r
             MergeMaxCosts(results, false)};
 }
 
-inline CopyResult::Result RunForkedCopyBatch(const CopyCase::Context& ctx, std::string srcName,
-                                             std::string dstName, std::string methodName,
-                                             const ForkedChildCopyFn& childCopy)
+inline std::vector<CopyResult::Result> RunForkedCopyBatchPerDevice(
+    const CopyCase::Context& ctx, const ForkedChildCopyFn& childCopy)
 {
     ASSERT(ctx.nDevice > 0);
     std::vector<ForkedChildProcess> children;
@@ -276,6 +275,14 @@ inline CopyResult::Result RunForkedCopyBatch(const CopyCase::Context& ctx, std::
     ASSERT(!failed);
     ASSERT(childResults.size() == ctx.nDevice);
 
+    return childResults;
+}
+
+inline CopyResult::Result RunForkedCopyBatch(const CopyCase::Context& ctx, std::string srcName,
+                                             std::string dstName, std::string methodName,
+                                             const ForkedChildCopyFn& childCopy)
+{
+    auto childResults = RunForkedCopyBatchPerDevice(ctx, childCopy);
     return MergeForkedResults(std::move(childResults), std::move(srcName), std::move(dstName),
                               std::move(methodName));
 }
