@@ -82,6 +82,36 @@ DEFINE_COPY_CASE(OneHost2AllDeviceCECase, "one_host_to_all_device_ce",
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
 
+DEFINE_COPY_CASE(HugeShm2DeviceCECase, "huge_shm_to_device_ce",
+                 "memcpy from HugeTLB shared host memory to device with ce one by one", ctx)
+{
+    CopyResult result;
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        HugeSharedCopyBuffer srcBuffer{device, ctx.size, ctx.num};
+        DeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+        H2DCECopyInstance instance{ctx.iter, false};
+        result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
+    }
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
+DEFINE_COPY_CASE_NO_RUNTIME(OneHugeShm2AllDeviceCECase, "one_huge_shm_to_all_device_ce",
+                            "memcpy from one HugeTLB shared host memory to all device with ce using fork submit",
+                            ctx)
+{
+    CopyResult result;
+    HugeSharedRegion srcRegion{"one_huge_shm_to_all_device_ce", 0, ctx.size, ctx.num};
+    result.Push(ascend_copy::RunForkedCopyBatch(
+        ctx, srcRegion.Name(), "acl::device::all", "CE-FORK", [&](size_t device) {
+            HugeSharedCopyBuffer srcBuffer{srcRegion.Fd(), srcRegion.MappedBytes(), device,
+                                           ctx.size, ctx.num};
+            DeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+            H2DCECopyInstance instance{ctx.iter, false};
+            return instance.DoCopy(&srcBuffer, &dstBuffer);
+        }));
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
 DEFINE_COPY_CASE_NO_RUNTIME(AllHost2AllDeviceCECase, "all_host_to_all_device_ce",
                             "memcpy from all host to all device with ce using fork submit", ctx)
 {

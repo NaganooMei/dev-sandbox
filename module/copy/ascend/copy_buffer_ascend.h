@@ -24,16 +24,64 @@
 #ifndef COPY_BUFFER_ASCEND_H
 #define COPY_BUFFER_ASCEND_H
 
+#include <cerrno>
 #include <cstdint>
 #include <cstring>
 #include <fcntl.h>
+#include <limits>
 #include <string>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 #include <utility>
 #include <vector>
 #include "copy_buffer.h"
 #include "error_handle_ascend.h"
+
+#ifndef MFD_CLOEXEC
+#define MFD_CLOEXEC 0x0001U
+#endif
+
+#ifndef MFD_HUGETLB
+#define MFD_HUGETLB 0x0004U
+#endif
+
+#ifndef MFD_HUGE_SHIFT
+#define MFD_HUGE_SHIFT 26
+#endif
+
+#ifndef MFD_HUGE_2MB
+#define MFD_HUGE_2MB (21U << MFD_HUGE_SHIFT)
+#endif
+
+inline size_t CheckedTotalBytes(size_t size, size_t number)
+{
+    ASSERT(number == 0 || size <= std::numeric_limits<size_t>::max() / number);
+    const auto total = size * number;
+    ASSERT(total > 0);
+    return total;
+}
+
+inline size_t RoundUpToHugePageSize(size_t bytes)
+{
+    constexpr size_t kHugePageSize = 2ull * 1024ull * 1024ull;
+    const auto remainder = bytes % kHugePageSize;
+    if (remainder == 0) { return bytes; }
+    const auto padding = kHugePageSize - remainder;
+    ASSERT(bytes <= std::numeric_limits<size_t>::max() - padding);
+    return bytes + padding;
+}
+
+inline int CreateHugeTlbMemfd(const std::string& name)
+{
+#ifdef SYS_memfd_create
+    return static_cast<int>(
+        syscall(SYS_memfd_create, name.c_str(), MFD_CLOEXEC | MFD_HUGETLB | MFD_HUGE_2MB));
+#else
+    errno = ENOSYS;
+    return -1;
+#endif
+}
 
 class HostCopyBuffer : public CopyBuffer {
 public:
@@ -77,6 +125,109 @@ public:
         }
     }
     std::string Name() const override { return "acl::anon::" + std::to_string(device_); }
+};
+
+class HugeSharedRegion : public CopyBuffer {
+public:
+    HugeSharedRegion(std::string tag, size_t device, size_t size, size_t number)
+        : CopyBuffer{device, size, number}
+    {
+        const auto total = CheckedTotalBytes(size, number);
+        mappedBytes_ = RoundUpToHugePageSize(total);
+        const auto name = "copy_ascend_huge_" + std::to_string(getpid()) + "_" + tag + "_" +
+                          std::to_string(reinterpret_cast<std::uintptr_t>(this));
+        fd_ = CreateHugeTlbMemfd(name);
+        ASSERT(fd_ != -1);
+        ASSERT(ftruncate(fd_, mappedBytes_) == 0);
+        constexpr auto prot = PROT_READ | PROT_WRITE;
+        constexpr auto flags = MAP_SHARED | MAP_POPULATE;
+        addr_ = mmap(nullptr, mappedBytes_, prot, flags, fd_, 0);
+        ASSERT(addr_ != MAP_FAILED);
+        std::memset(addr_, 'g', total);
+    }
+
+    ~HugeSharedRegion() override
+    {
+        if (addr_) {
+            munmap(addr_, mappedBytes_);
+            addr_ = nullptr;
+        }
+        if (fd_ != -1) {
+            close(fd_);
+            fd_ = -1;
+        }
+    }
+
+    int Fd() const { return fd_; }
+    size_t MappedBytes() const { return mappedBytes_; }
+    std::string Name() const override { return "acl::huge_shm::0"; }
+
+private:
+    int fd_ = -1;
+    size_t mappedBytes_ = 0;
+};
+
+class HugeSharedCopyBuffer : public CopyBuffer {
+public:
+    HugeSharedCopyBuffer(size_t device, size_t size, size_t number)
+        : CopyBuffer{device, size, number}
+    {
+        const auto total = CheckedTotalBytes(size, number);
+        mappedBytes_ = RoundUpToHugePageSize(total);
+        const auto name = "copy_ascend_huge_" + std::to_string(getpid()) + "_" +
+                          std::to_string(reinterpret_cast<std::uintptr_t>(this));
+        fd_ = CreateHugeTlbMemfd(name);
+        ownsFd_ = true;
+        ASSERT(fd_ != -1);
+        ASSERT(ftruncate(fd_, mappedBytes_) == 0);
+        MapAndRegister();
+        std::memset(addr_, 'g', total);
+    }
+
+    HugeSharedCopyBuffer(int fd, size_t mappedBytes, size_t device, size_t size, size_t number)
+        : CopyBuffer{device, size, number}, fd_{fd}, mappedBytes_{mappedBytes}
+    {
+        ASSERT(fd_ != -1);
+        ASSERT(CheckedTotalBytes(size, number) <= mappedBytes_);
+        MapAndRegister();
+    }
+
+    ~HugeSharedCopyBuffer() override
+    {
+        if (addr_) {
+            ASCEND_ASSERT(aclrtSetDevice(device_));
+            ASCEND_ASSERT(aclrtHostUnregister(addr_));
+            munmap(addr_, mappedBytes_);
+            addr_ = nullptr;
+        }
+        if (ownsFd_ && fd_ != -1) {
+            close(fd_);
+            fd_ = -1;
+        }
+    }
+
+    void* HostAt(size_t i) const { return At(i); }
+
+    std::string Name() const override
+    {
+        return "acl::huge_shm::" + std::to_string(device_);
+    }
+
+private:
+    void MapAndRegister()
+    {
+        constexpr auto prot = PROT_READ | PROT_WRITE;
+        constexpr auto flags = MAP_SHARED | MAP_POPULATE;
+        addr_ = mmap(nullptr, mappedBytes_, prot, flags, fd_, 0);
+        ASSERT(addr_ != MAP_FAILED);
+        ASCEND_ASSERT(aclrtSetDevice(device_));
+        ASCEND_ASSERT(
+            aclrtHostRegisterV2(addr_, mappedBytes_, ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED));
+    }
+
+    int fd_ = -1;
+    size_t mappedBytes_ = 0;
+    bool ownsFd_ = false;
 };
 
 class SharedHostRegion : public CopyBuffer {

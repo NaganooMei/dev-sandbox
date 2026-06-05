@@ -152,6 +152,28 @@ DEFINE_COPY_CASE(Host2DeviceFFTSPipelineCase, "host_to_device_ffts_pipeline",
     ShowPipelineResult(*this, result, effectiveObjectFrags);
 }
 
+DEFINE_COPY_CASE(HugeShm2DeviceFFTSPipelineCase, "huge_shm_to_device_ffts_pipeline",
+                 "copy HugeTLB shared host memory to fragmented device buffers with h2d and ffts pipeline",
+                 ctx)
+{
+    CopyResult result;
+    const auto objectFrags = ReadFftsPipelineObjectFrags();
+    const auto effectiveObjectFrags = ctx.num == 0 ? objectFrags : std::min(objectFrags, ctx.num);
+    const bool validationEnabled = FftsValidationEnabled();
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        HugeSharedCopyBuffer srcBuffer{device, ctx.size, ctx.num};
+        FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+        InitializeHostPatternedBuffer(srcBuffer);
+        ResetBuffer(dstBuffer);
+
+        H2DFFTSPipelineCopyInstance instance{ctx.iter, false, objectFrags};
+        result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
+        ValidateDeviceBufferIfEnabled(dstBuffer, validationEnabled);
+    }
+    PrintValidationPassIfEnabled(*this, validationEnabled);
+    ShowPipelineResult(*this, result, effectiveObjectFrags);
+}
+
 DEFINE_COPY_CASE_NO_RUNTIME(
     OneShareHost2AllDeviceFFTSPipelineCase, "one_share_host_to_all_device_ffts_pipeline",
     "copy one shared host buffer to all fragmented device buffers with h2d and ffts pipeline using fork submit",
@@ -169,6 +191,36 @@ DEFINE_COPY_CASE_NO_RUNTIME(
         ctx, srcRegion.Name(), "acl::device_frag::all", "h2d_ffts_pipeline-FORK",
         [&](size_t device) {
             SharedHostCopyBuffer srcBuffer{srcRegion.ShmName(), device, ctx.size, ctx.num};
+            FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+            ResetBuffer(dstBuffer);
+
+            H2DFFTSPipelineCopyInstance instance{ctx.iter, false, objectFrags};
+            auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer);
+            ValidateDeviceBufferIfEnabled(dstBuffer, validationEnabled);
+            return childResult;
+        }));
+    PrintValidationPassIfEnabled(*this, validationEnabled);
+    ShowPipelineResult(*this, result, effectiveObjectFrags);
+}
+
+DEFINE_COPY_CASE_NO_RUNTIME(
+    OneHugeShm2AllDeviceFFTSPipelineCase, "one_huge_shm_to_all_device_ffts_pipeline",
+    "copy one HugeTLB shared host buffer to all fragmented device buffers with h2d and ffts pipeline using fork submit",
+    ctx)
+{
+    CopyResult result;
+    const auto objectFrags = ReadFftsPipelineObjectFrags();
+    const auto effectiveObjectFrags = ctx.num == 0 ? objectFrags : std::min(objectFrags, ctx.num);
+    const bool validationEnabled = FftsValidationEnabled();
+
+    HugeSharedRegion srcRegion{"one_huge_shm_to_all_device_ffts_pipeline", 0, ctx.size,
+                               ctx.num};
+    InitializeHostPatternedBuffer(srcRegion);
+    result.Push(ascend_copy::RunForkedCopyBatch(
+        ctx, srcRegion.Name(), "acl::device_frag::all", "h2d_ffts_pipeline-FORK",
+        [&](size_t device) {
+            HugeSharedCopyBuffer srcBuffer{srcRegion.Fd(), srcRegion.MappedBytes(), device,
+                                           ctx.size, ctx.num};
             FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
             ResetBuffer(dstBuffer);
 

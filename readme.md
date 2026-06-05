@@ -50,6 +50,8 @@ case。
 | `device_to_device_ce` | CUDA / Ascend | device -> device | 单设备内 D2D 拷贝 |
 | `one_device_to_all_device_ce` | CUDA / Ascend | device0 -> all devices | 同一份 device buffer 依次拷贝到所有 device |
 | `anonymous_to_device_ce` | CUDA / Ascend | anonymous host -> device | 从匿名 host 内存拷贝到 device |
+| `huge_shm_to_device_ce` | Ascend | HugeTLB shared host -> device | 通过 memfd HugeTLB 创建 shared host buffer，逐设备 H2D 拷贝 |
+| `one_huge_shm_to_all_device_ce` | Ascend | one HugeTLB shared host -> all devices | 父进程创建一块 HugeTLB shared host buffer，子进程继承 fd 后 fork fan-out 到所有 device |
 
 ### CUDA 专属
 
@@ -81,7 +83,9 @@ Ascend FFTS pipeline case 注册在 `copy` 主程序中。Ascend 后端可用且
 | case | 传输方向 | 说明 |
 | --- | --- | --- |
 | `host_to_device_ffts_pipeline` | host -> fragmented device | 逐设备 H2D 写入双缓冲 device staging slot，再用 FFTS split 到多个 device fragment |
+| `huge_shm_to_device_ffts_pipeline` | HugeTLB shared host -> fragmented device | 通过 memfd HugeTLB 创建 shared host buffer，再走 H2D FFTS pipeline |
 | `one_share_host_to_all_device_ffts_pipeline` | shared host -> all fragmented devices | 一块 POSIX shared memory host buffer 通过 fork fan-out 到所有 fragmented device，单卡内使用 H2D FFTS pipeline |
+| `one_huge_shm_to_all_device_ffts_pipeline` | one HugeTLB shared host -> all fragmented devices | 父进程创建一块 HugeTLB shared host buffer，子进程继承 fd 后 fork fan-out 到所有 fragmented device |
 | `one_host_to_all_device_ffts_pipeline` | host0 -> all fragmented devices | 同一份 host0 buffer 通过 H2D FFTS pipeline 拷贝到所有 device |
 | `all_host_to_all_device_ffts_pipeline` | host[i] -> fragmented device[i] | 多个 host/device buffer 通过 fork 并发提交 H2D FFTS pipeline |
 
@@ -90,6 +94,33 @@ Ascend FFTS pipeline case 注册在 `copy` 主程序中。Ascend 后端可用且
 - `COPY_FFTS_VALIDATE` 控制是否做正确性校验。设置为 `1`、`true`、`TRUE`、`on` 或 `ON` 时，case 会校验每个 device fragment；全部通过后输出 `PASS`。
 - `COPY_FFTS_PIPELINE_OBJECT_FRAGS` 控制每个 logical object 包含多少个 fragment，默认值为 `8`。它影响 H2D staging 的 object 粒度，也影响一次 FFTS split 覆盖的 fragment 数量。
 - `FFTS_MAX_READY_LANES` 控制 FFTS dispatcher 中一个 FFTS task 初始 ready 的 SDMA context 数量，默认值为 `8`。它不改变 logical object 大小，只影响 dispatcher 内部 ready lane 组织方式。
+
+HugeTLB shared host case 使用 `memfd_create` 搭配 `MFD_HUGETLB` 和 `MFD_HUGE_2MB` 创建大页 fd，不需要额外挂载 hugetlbfs。运行前宿主机需要预留 HugeTLB 页，例如：
+
+```bash
+echo 8192 > /proc/sys/vm/nr_hugepages
+```
+
+运行时可以观察宿主机 HugeTLB 使用量：
+
+```bash
+watch -n 0.2 'grep -i Huge /proc/meminfo'
+```
+
+case 持有 buffer 时，`HugePages_Free` 会下降；进程退出并释放映射后会恢复。这个路径使用 memfd HugeTLB，通常不会让 `ShmemHugePages` 增加。
+
+HugeTLB CE smoke：
+
+```bash
+./build/module/copy/copy -t one_huge_shm_to_all_device_ce -s 2M -n 64 -i 16 -d 8
+```
+
+HugeTLB FFTS pipeline smoke：
+
+```bash
+COPY_FFTS_VALIDATE=1 COPY_FFTS_PIPELINE_OBJECT_FRAGS=8 \
+./build/module/copy/copy -t one_huge_shm_to_all_device_ffts_pipeline -s 32K -n 1024 -i 16 -d 8
+```
 
 最小正确性验证：
 
