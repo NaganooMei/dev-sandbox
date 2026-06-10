@@ -1,6 +1,6 @@
 # dev-sandbox Ascend copy benchmark
 
-这个分支的 README 只整理 Ascend copy 相关 case，用来观察 H2D、D2D、单 host 多卡读、POSIX shared memory、HugeTLB shared memory、multi-stream 和 H2D FFTS pipeline 的带宽表现。
+这个分支的 README 只整理 Ascend copy 相关 case，用来观察 H2D、D2D、单 host 多卡读、POSIX shared memory、HugeTLB shared memory、multi-stream、H2D FFTS pipeline 和 H2D FFTS direct 的带宽表现。
 
 ## 构建
 
@@ -158,6 +158,31 @@ HugeTLB FFTS smoke：
 ```bash
 COPY_FFTS_VALIDATE=1 COPY_FFTS_PIPELINE_OBJECT_FRAGS=8 \
 ./build/module/copy/copy -t one_huge_shm_to_all_device_ffts_pipeline -s 32K -n 1024 -i 16 -d 8
+```
+
+### H2D FFTS Direct
+
+这一组只有在构建环境检测到 Ascend FFTS 头文件和 `libruntime.so` 时才会编译。它不经过 CE staging，FFTS SDMA descriptor 直接使用 `aclrtHostGetDevicePointer` 返回的 mapped host pointer 作为 source，device pointer 作为 destination。
+
+| case | 源 buffer | 目标 buffer | 输出口径 | 说明 |
+| --- | --- | --- | --- | --- |
+| `all_host_to_all_device_ffts_direct_h2d` | 每张卡各自一块 `aclrtMallocHost` host buffer，并注册 mapped | device buffer | 聚合一行 | 8 进程、8 host buffer、8 device 的 direct H2D SDMA |
+| `one_share_host_to_all_device_ffts_direct_h2d` | 一块 POSIX shared memory host buffer，每个子进程注册 mapped | device buffer | 聚合一行 | 多进程同时从同一块 shared host 做 direct H2D SDMA |
+
+推荐命令：
+
+```bash
+FFTS_MAX_READY_LANES=8 COPY_FFTS_VALIDATE=1 \
+./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 4M -n 1000 -i 10 -d 8
+
+FFTS_MAX_READY_LANES=8 COPY_FFTS_VALIDATE=1 \
+./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 32K -n 1000 -i 10 -d 8
+
+FFTS_MAX_READY_LANES=8 COPY_FFTS_VALIDATE=1 \
+./build/module/copy/copy -t one_share_host_to_all_device_ffts_direct_h2d -s 4M -n 1000 -i 10 -d 8
+
+FFTS_MAX_READY_LANES=8 COPY_FFTS_VALIDATE=1 \
+./build/module/copy/copy -t one_share_host_to_all_device_ffts_direct_h2d -s 32K -n 1000 -i 10 -d 8
 ```
 
 ## 单源多卡冲突排查顺序

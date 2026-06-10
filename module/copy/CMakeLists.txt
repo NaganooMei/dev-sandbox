@@ -23,10 +23,12 @@ elseif(RUNTIME_BACKEND STREQUAL "Ascend")
     if(HAVE_ASCEND_FFTS_RUNTIME)
         find_package(Threads REQUIRED)
         list(APPEND RUNTIME_SOURCE_FILES
-            ascend/h2d_ffts_pipeline/copy_case_h2d_ffts_pipeline_ascend.cc)
+            ascend/h2d_ffts_pipeline/copy_case_h2d_ffts_pipeline_ascend.cc
+            ascend/ffts_direct_h2d/copy_case_ffts_direct_h2d_ascend.cc)
         target_include_directories(copy PRIVATE
             ascend
             ascend/h2d_ffts_pipeline
+            ascend/ffts_direct_h2d
             ${ASCEND_FFTS_INCLUDE_DIRS})
         target_link_libraries(copy PRIVATE "${ASCEND_RUNTIME_LIBRARY}" Threads::Threads)
     else()
