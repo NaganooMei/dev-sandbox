@@ -78,6 +78,34 @@ mapped host source pointer -> device destination pointer -> fragment size
 聚合 Count = -n * --frags * device_count
 ```
 
+## 多进程 submit 与 CPU 绑定
+
+所有 fork fan-out case 默认会把不同子进程绑定到不同 allowed CPU。程序会读取当前进程的 CPU affinity mask，再按 device 序号选择 CPU：
+
+```text
+device0 -> 第 0 个 allowed CPU
+device1 -> 第 1 个 allowed CPU
+...
+```
+
+这样可以减少多进程同时 submit 时的 OS 调度抖动，尤其是 `-n > 1` 且 `--frags` 很小时，每个子进程会多次调用 `rtFftsPlusTaskLaunchWithFlag`，submit 耗时容易受到 CPU 抢占和 runtime/driver 侧锁竞争影响。
+
+可用环境变量：
+
+```text
+COPY_FORK_BIND_CPU=0      关闭自动绑核
+COPY_FORK_CPU_VERBOSE=1   打印每个 device 子进程绑定到哪个 CPU
+COPY_FORK_CPU_OFFSET=N    从第 N 个 allowed CPU 开始分配
+COPY_FORK_CPU_STRIDE=N    按 stride 跳着分配 CPU，默认 1
+```
+
+验证绑定：
+
+```bash
+COPY_FORK_CPU_VERBOSE=1 FFTS_MAX_READY_LANES=8 \
+./build/module/copy/copy -t one_share_host_to_all_device_ffts_direct_h2d -s 32K -n 1000 --frags 1 -i 10 -d 8
+```
+
 ## UCM 开启 O_DIRECT 后的 host buffer 形态
 
 UCM local CacheStore buffer 有两种 host 分配路径：

@@ -32,6 +32,7 @@
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <sched.h>
 #include <string>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -61,6 +62,65 @@ struct ResultWireHeader {
     std::uint64_t submitCount = 0;
     std::uint64_t copyCount = 0;
 };
+
+constexpr const char* kForkBindCpuEnv = "COPY_FORK_BIND_CPU";
+constexpr const char* kForkCpuOffsetEnv = "COPY_FORK_CPU_OFFSET";
+constexpr const char* kForkCpuStrideEnv = "COPY_FORK_CPU_STRIDE";
+constexpr const char* kForkCpuVerboseEnv = "COPY_FORK_CPU_VERBOSE";
+
+inline bool EnvFlagEnabled(const char* name, bool defaultValue)
+{
+    const char* value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') { return defaultValue; }
+    return std::strcmp(value, "0") != 0 && std::strcmp(value, "false") != 0 &&
+           std::strcmp(value, "FALSE") != 0 && std::strcmp(value, "off") != 0 &&
+           std::strcmp(value, "OFF") != 0;
+}
+
+inline size_t EnvUnsigned(const char* name, size_t defaultValue)
+{
+    const char* value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') { return defaultValue; }
+
+    char* end = nullptr;
+    errno = 0;
+    const auto parsed = std::strtoull(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0') { return defaultValue; }
+    return static_cast<size_t>(parsed);
+}
+
+inline std::vector<int> AllowedCpuList()
+{
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    if (sched_getaffinity(0, sizeof(mask), &mask) != 0) { return {}; }
+
+    std::vector<int> cpus;
+    for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+        if (CPU_ISSET(cpu, &mask)) { cpus.push_back(cpu); }
+    }
+    return cpus;
+}
+
+inline void BindChildToCpu(size_t device, const std::vector<int>& allowedCpus)
+{
+    if (!EnvFlagEnabled(kForkBindCpuEnv, true) || allowedCpus.empty()) { return; }
+
+    const auto offset = EnvUnsigned(kForkCpuOffsetEnv, 0);
+    const auto stride = std::max<size_t>(EnvUnsigned(kForkCpuStrideEnv, 1), 1);
+    const auto cpuIndex = (offset + device * stride) % allowedCpus.size();
+    const auto cpu = allowedCpus[cpuIndex];
+
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    CPU_SET(cpu, &mask);
+    if (sched_setaffinity(0, sizeof(mask), &mask) != 0) {
+        std::fprintf(stderr, "[fork-copy] failed to bind device %zu child to cpu %d: %s\n",
+                     device, cpu, std::strerror(errno));
+    } else if (EnvFlagEnabled(kForkCpuVerboseEnv, false)) {
+        std::fprintf(stderr, "[fork-copy] device %zu child bound to cpu %d\n", device, cpu);
+    }
+}
 
 inline bool WriteExact(int fd, const void* data, size_t size)
 {
@@ -227,6 +287,14 @@ inline std::vector<CopyResult::Result> RunForkedCopyBatchPerDevice(
     const CopyCase::Context& ctx, const ForkedChildCopyFn& childCopy)
 {
     ASSERT(ctx.nDevice > 0);
+    const auto allowedCpus = AllowedCpuList();
+    if (EnvFlagEnabled(kForkBindCpuEnv, true) && allowedCpus.size() < ctx.nDevice) {
+        std::fprintf(stderr,
+                     "[fork-copy] warning: only %zu CPUs are allowed for %zu children; "
+                     "CPU binding will wrap\n",
+                     allowedCpus.size(), ctx.nDevice);
+    }
+
     std::vector<ForkedChildProcess> children;
     children.reserve(ctx.nDevice);
 
@@ -237,6 +305,7 @@ inline std::vector<CopyResult::Result> RunForkedCopyBatchPerDevice(
         ASSERT(pid != -1);
         if (pid == 0) {
             close(pipeFds[0]);
+            BindChildToCpu(device, allowedCpus);
             RunChildCopy(device, pipeFds[1], childCopy);
         }
 

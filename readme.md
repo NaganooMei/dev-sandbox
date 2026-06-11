@@ -33,6 +33,32 @@ cmake --build build -j
 
 `Size(KB)` 是单个数据块大小，`Count` 是一次统计结果覆盖的数据块数量。聚合 case 的 `Count` 可能会等于 `-n * -d`，per-device case 则通常每张卡一行，每行 `Count = -n`。
 
+## Fork 子进程 CPU 绑定
+
+所有使用 fork fan-out 的 Ascend case 默认会给每个子进程绑定一个不同的 allowed CPU。程序先读取当前进程的 CPU affinity mask，然后按 device 序号选择 CPU：
+
+```text
+device0 -> 第 0 个 allowed CPU
+device1 -> 第 1 个 allowed CPU
+...
+```
+
+可用环境变量：
+
+```text
+COPY_FORK_BIND_CPU=0      关闭自动绑核
+COPY_FORK_CPU_VERBOSE=1   打印每个 device 子进程绑定到哪个 CPU
+COPY_FORK_CPU_OFFSET=N    从第 N 个 allowed CPU 开始分配
+COPY_FORK_CPU_STRIDE=N    按 stride 跳着分配 CPU，默认 1
+```
+
+例如：
+
+```bash
+COPY_FORK_CPU_VERBOSE=1 FFTS_MAX_READY_LANES=8 \
+./build/module/copy/copy -t one_share_host_to_all_device_ffts_direct_h2d -s 32K -n 1000 --frags 1 -i 10 -d 8
+```
+
 ## Case 分类
 
 ### 基础 CE
