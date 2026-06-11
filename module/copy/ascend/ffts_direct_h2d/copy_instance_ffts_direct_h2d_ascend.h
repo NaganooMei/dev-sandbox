@@ -39,13 +39,14 @@ protected:
         size_t deviceId = 0;
         aclrtStream stream = nullptr;
         aclrtEvent endEvent = nullptr;
-        std::vector<AscendFftsCopySpec> copies;
+        std::vector<std::vector<AscendFftsCopySpec>> tasks;
         FftsD2DDispatcher dispatcher;
     };
 
     std::vector<DirectContext> contexts_;
     aclrtEvent totalStart_ = nullptr;
     aclrtEvent totalEnd_ = nullptr;
+    size_t fragsPerTask_ = 0;
 
     void Prepare(const std::vector<const CopyBuffer*>& srcBuffers,
                  const std::vector<const CopyBuffer*>& dstBuffers) override
@@ -76,9 +77,17 @@ protected:
             ASCEND_ASSERT(aclrtCreateStream(&ctx.stream));
             ASCEND_ASSERT(aclrtCreateEvent(&ctx.endEvent));
 
-            ctx.copies.reserve(number);
-            for (size_t fragment = 0; fragment < number; ++fragment) {
-                ctx.copies.push_back({(*dst)[fragment], mappedSrc->MappedAt(fragment), size});
+            const auto taskFrags = fragsPerTask_ == 0 ? number : fragsPerTask_;
+            ASSERT(taskFrags > 0);
+            ASSERT(number % taskFrags == 0);
+            ctx.tasks.reserve(number / taskFrags);
+            for (size_t first = 0; first < number; first += taskFrags) {
+                std::vector<AscendFftsCopySpec> copies;
+                copies.reserve(taskFrags);
+                for (size_t fragment = first; fragment < first + taskFrags; ++fragment) {
+                    copies.push_back({(*dst)[fragment], mappedSrc->MappedAt(fragment), size});
+                }
+                ctx.tasks.push_back(std::move(copies));
             }
             contexts_.push_back(std::move(ctx));
         }
@@ -146,15 +155,17 @@ protected:
     static void SubmitContext(DirectContext& ctx)
     {
         ASCEND_ASSERT(aclrtSetDevice(ctx.deviceId));
-        const auto readyCount = ctx.dispatcher.BuildCopies(ctx.copies);
-        ASSERT(readyCount > 0);
-        ctx.dispatcher.Launch(ctx.stream, readyCount);
+        for (const auto& copies : ctx.tasks) {
+            const auto readyCount = ctx.dispatcher.BuildCopies(copies);
+            ASSERT(readyCount > 0);
+            ctx.dispatcher.Launch(ctx.stream, readyCount);
+        }
         ASCEND_ASSERT(aclrtRecordEvent(ctx.endEvent, ctx.stream));
     }
 
 public:
-    FftsDirectH2DCopyInstance(size_t iterations, bool affinitySrc)
-        : CopyInstance(iterations, affinitySrc)
+    FftsDirectH2DCopyInstance(size_t iterations, bool affinitySrc, size_t fragsPerTask = 0)
+        : CopyInstance(iterations, affinitySrc), fragsPerTask_(fragsPerTask)
     {
     }
 

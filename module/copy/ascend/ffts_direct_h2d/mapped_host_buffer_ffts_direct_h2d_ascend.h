@@ -38,6 +38,10 @@
 #include "copy_buffer.h"
 #include "error_handle.h"
 
+#ifndef MAP_HUGE_SHIFT
+#define MAP_HUGE_SHIFT 26
+#endif
+
 class FftsDirectMappedHostBuffer {
 public:
     virtual ~FftsDirectMappedHostBuffer() = default;
@@ -66,6 +70,56 @@ inline bool FftsDirectIsPageAligned(const void* ptr)
 {
     constexpr size_t kPageSize = 4096;
     return reinterpret_cast<std::uintptr_t>(ptr) % kPageSize == 0;
+}
+
+inline size_t FftsDirectRoundUp(size_t bytes, size_t alignment)
+{
+    const auto remainder = bytes % alignment;
+    if (remainder == 0) { return bytes; }
+    const auto padding = alignment - remainder;
+    ASSERT(bytes <= std::numeric_limits<size_t>::max() - padding);
+    return bytes + padding;
+}
+
+inline void* FftsDirectMmapHugeTlb(size_t& bytes, bool useGiganticPages)
+{
+    constexpr size_t kHugePageSize = 2ull * 1024ull * 1024ull;
+    constexpr size_t kGiganticPageSize = 1ull * 1024ull * 1024ull * 1024ull;
+    constexpr int kHugePageFlag = 21 << MAP_HUGE_SHIFT;
+    constexpr int kGiganticPageFlag = 30 << MAP_HUGE_SHIFT;
+
+    const auto pageSize = useGiganticPages ? kGiganticPageSize : kHugePageSize;
+    const auto alignedBytes = FftsDirectRoundUp(bytes, pageSize);
+    const auto pageFlag = useGiganticPages ? kGiganticPageFlag : kHugePageFlag;
+    constexpr auto prot = PROT_READ | PROT_WRITE;
+    const auto flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | pageFlag;
+    auto* ptr = mmap(nullptr, alignedBytes, prot, flags, -1, 0);
+    if (ptr != MAP_FAILED) { bytes = alignedBytes; }
+    return ptr;
+}
+
+inline void* FftsDirectMmapWithTransparentHugePage(size_t& bytes)
+{
+    constexpr size_t kHugePageSize = 2ull * 1024ull * 1024ull;
+    const auto alignedBytes = FftsDirectRoundUp(bytes, kHugePageSize);
+    constexpr auto prot = PROT_READ | PROT_WRITE;
+    constexpr auto flags = MAP_PRIVATE | MAP_ANONYMOUS;
+    auto* ptr = mmap(nullptr, alignedBytes, prot, flags, -1, 0);
+    if (ptr != MAP_FAILED) {
+        madvise(ptr, alignedBytes, MADV_HUGEPAGE);
+        bytes = alignedBytes;
+    }
+    return ptr;
+}
+
+inline void* FftsDirectMmapODirectHostBuffer(size_t& bytes)
+{
+    constexpr size_t kGiganticPageSize = 1ull * 1024ull * 1024ull * 1024ull;
+    const bool useGiganticPages = bytes >= kGiganticPageSize;
+    auto* ptr = FftsDirectMmapHugeTlb(bytes, useGiganticPages);
+    if (ptr == MAP_FAILED && useGiganticPages) { ptr = FftsDirectMmapHugeTlb(bytes, false); }
+    if (ptr == MAP_FAILED) { ptr = FftsDirectMmapWithTransparentHugePage(bytes); }
+    return ptr;
 }
 
 class FftsMappedHostCopyBuffer : public CopyBuffer, public FftsDirectMappedHostBuffer {
@@ -109,6 +163,55 @@ private:
     void* mappedAddr_ = nullptr;
     size_t mappedBytes_ = 0;
     bool registered_ = false;
+};
+
+class FftsODirectMappedHostCopyBuffer : public CopyBuffer, public FftsDirectMappedHostBuffer {
+public:
+    FftsODirectMappedHostCopyBuffer(size_t device, size_t size, size_t number)
+        : CopyBuffer{device, size, number}
+    {
+        const auto total = FftsDirectCheckedTotalBytes(size, number);
+        mappedBytes_ = total;
+        addr_ = FftsDirectMmapODirectHostBuffer(mappedBytes_);
+        ASSERT(addr_ != MAP_FAILED);
+        ASSERT(FftsDirectIsPageAligned(addr_));
+        std::memset(addr_, 'o', total);
+        locked_ = (mlock(addr_, mappedBytes_) == 0);
+
+        ASCEND_ASSERT(aclrtSetDevice(device_));
+        ASCEND_ASSERT(
+            aclrtHostRegisterV2(addr_, mappedBytes_, ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED));
+        registered_ = true;
+        ASCEND_ASSERT(aclrtHostGetDevicePointer(addr_, &mappedAddr_, 0));
+    }
+
+    ~FftsODirectMappedHostCopyBuffer() override
+    {
+        if (addr_ != nullptr && addr_ != MAP_FAILED) {
+            ASCEND_ASSERT(aclrtSetDevice(device_));
+            if (registered_) { ASCEND_ASSERT(aclrtHostUnregister(addr_)); }
+            if (locked_) { munlock(addr_, mappedBytes_); }
+            munmap(addr_, mappedBytes_);
+            addr_ = nullptr;
+        }
+    }
+
+    void* MappedAt(size_t i) const override
+    {
+        ASSERT(i < number_);
+        return static_cast<void*>(static_cast<char*>(mappedAddr_) + i * size_);
+    }
+
+    std::string Name() const override
+    {
+        return "acl::odirect_mmap::" + std::to_string(device_);
+    }
+
+private:
+    void* mappedAddr_ = nullptr;
+    size_t mappedBytes_ = 0;
+    bool registered_ = false;
+    bool locked_ = false;
 };
 
 class FftsMappedSharedHostRegion : public CopyBuffer {

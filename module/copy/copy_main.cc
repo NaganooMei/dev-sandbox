@@ -29,7 +29,8 @@
 
 struct ArgsParser {
     std::unordered_set<std::string> names;
-    CopyCase::Context ctx{.size = 512ull * 1024ull * 1024ull, .num = 8, .iter = 128, .nDevice = 8};
+    CopyCase::Context ctx{
+        .size = 512ull * 1024ull * 1024ull, .num = 8, .frags = 0, .iter = 128, .nDevice = 8};
 
     static void Help(std::string_view proc)
     {
@@ -37,7 +38,10 @@ struct ArgsParser {
         fmt::println("Options:");
         fmt::println("  -t <name>        Case name");
         fmt::println("  -s <size>        Data size in KB/MB (e.g., 4K, 16K, 1M, default: 512MB)");
-        fmt::println("  -n <count>       Data number (default: 8)");
+        fmt::println("  -n <count>       Data number (default: 8). For ffts direct H2D with");
+        fmt::println("                   --frags, this is IO/task count.");
+        fmt::println("  -f, --frags <n>  Fragments per IO/task for ffts direct H2D");
+        fmt::println("                   (default: 0, legacy single task)");
         fmt::println("  -i <count>       Iteration count (default: 128)");
         fmt::println("  -d <count>       Number of devices (default: 8)");
     }
@@ -80,6 +84,8 @@ struct ArgsParser {
                 ctx.size = ParseSize(argv[++i]);
             } else if (arg == "-n" && i + 1 < argc) {
                 ctx.num = ParseUnsigned(argv[++i], "Invalid data count.");
+            } else if ((arg == "-f" || arg == "--frags") && i + 1 < argc) {
+                ctx.frags = ParseUnsigned(argv[++i], "Invalid fragment count.");
             } else if (arg == "-i" && i + 1 < argc) {
                 ctx.iter = ParseUnsigned(argv[++i], "Invalid iteration count.");
             } else if (arg == "-d" && i + 1 < argc) {

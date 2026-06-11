@@ -37,6 +37,7 @@ public:
     struct Context {
         size_t size;
         size_t num;
+        size_t frags;
         size_t iter;
         size_t nDevice;
     };
