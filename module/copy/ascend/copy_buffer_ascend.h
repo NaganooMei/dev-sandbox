@@ -54,6 +54,10 @@
 #define MFD_HUGE_2MB (21U << MFD_HUGE_SHIFT)
 #endif
 
+#ifndef MAP_HUGE_SHIFT
+#define MAP_HUGE_SHIFT 26
+#endif
+
 inline size_t CheckedTotalBytes(size_t size, size_t number)
 {
     ASSERT(number == 0 || size <= std::numeric_limits<size_t>::max() / number);
@@ -70,6 +74,63 @@ inline size_t RoundUpToHugePageSize(size_t bytes)
     const auto padding = kHugePageSize - remainder;
     ASSERT(bytes <= std::numeric_limits<size_t>::max() - padding);
     return bytes + padding;
+}
+
+inline size_t RoundUpToAlignment(size_t bytes, size_t alignment)
+{
+    ASSERT(alignment > 0);
+    const auto remainder = bytes % alignment;
+    if (remainder == 0) { return bytes; }
+    const auto padding = alignment - remainder;
+    ASSERT(bytes <= std::numeric_limits<size_t>::max() - padding);
+    return bytes + padding;
+}
+
+inline bool IsPageAligned(const void* ptr)
+{
+    constexpr size_t kPageSize = 4096;
+    return reinterpret_cast<std::uintptr_t>(ptr) % kPageSize == 0;
+}
+
+inline void* MmapODirectHugeTlb(size_t& bytes, bool useGiganticPages)
+{
+    constexpr size_t kHugePageSize = 2ull * 1024ull * 1024ull;
+    constexpr size_t kGiganticPageSize = 1ull * 1024ull * 1024ull * 1024ull;
+    constexpr int kHugePageFlag = 21 << MAP_HUGE_SHIFT;
+    constexpr int kGiganticPageFlag = 30 << MAP_HUGE_SHIFT;
+
+    const auto pageSize = useGiganticPages ? kGiganticPageSize : kHugePageSize;
+    const auto alignedBytes = RoundUpToAlignment(bytes, pageSize);
+    const auto pageFlag = useGiganticPages ? kGiganticPageFlag : kHugePageFlag;
+    constexpr auto prot = PROT_READ | PROT_WRITE;
+    const auto flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | pageFlag;
+    auto* ptr = mmap(nullptr, alignedBytes, prot, flags, -1, 0);
+    if (ptr != MAP_FAILED) { bytes = alignedBytes; }
+    return ptr;
+}
+
+inline void* MmapODirectWithTransparentHugePage(size_t& bytes)
+{
+    constexpr size_t kHugePageSize = 2ull * 1024ull * 1024ull;
+    const auto alignedBytes = RoundUpToAlignment(bytes, kHugePageSize);
+    constexpr auto prot = PROT_READ | PROT_WRITE;
+    constexpr auto flags = MAP_PRIVATE | MAP_ANONYMOUS;
+    auto* ptr = mmap(nullptr, alignedBytes, prot, flags, -1, 0);
+    if (ptr != MAP_FAILED) {
+        madvise(ptr, alignedBytes, MADV_HUGEPAGE);
+        bytes = alignedBytes;
+    }
+    return ptr;
+}
+
+inline void* MmapODirectHostBuffer(size_t& bytes)
+{
+    constexpr size_t kGiganticPageSize = 1ull * 1024ull * 1024ull * 1024ull;
+    const bool useGiganticPages = bytes >= kGiganticPageSize;
+    auto* ptr = MmapODirectHugeTlb(bytes, useGiganticPages);
+    if (ptr == MAP_FAILED && useGiganticPages) { ptr = MmapODirectHugeTlb(bytes, false); }
+    if (ptr == MAP_FAILED) { ptr = MmapODirectWithTransparentHugePage(bytes); }
+    return ptr;
 }
 
 inline int CreateHugeTlbMemfd(const std::string& name)
@@ -125,6 +186,47 @@ public:
         }
     }
     std::string Name() const override { return "acl::anon::" + std::to_string(device_); }
+};
+
+class ODirectHostCopyBuffer : public CopyBuffer {
+public:
+    ODirectHostCopyBuffer(size_t device, size_t size, size_t number)
+        : CopyBuffer{device, size, number}
+    {
+        const auto total = CheckedTotalBytes(size, number);
+        mappedBytes_ = total;
+        addr_ = MmapODirectHostBuffer(mappedBytes_);
+        ASSERT(addr_ != MAP_FAILED);
+        ASSERT(IsPageAligned(addr_));
+        std::memset(addr_, 'o', total);
+        locked_ = (mlock(addr_, mappedBytes_) == 0);
+
+        ASCEND_ASSERT(aclrtSetDevice(device_));
+        ASCEND_ASSERT(
+            aclrtHostRegisterV2(addr_, mappedBytes_, ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED));
+        registered_ = true;
+    }
+
+    ~ODirectHostCopyBuffer() override
+    {
+        if (addr_ != nullptr && addr_ != MAP_FAILED) {
+            ASCEND_ASSERT(aclrtSetDevice(device_));
+            if (registered_) { ASCEND_ASSERT(aclrtHostUnregister(addr_)); }
+            if (locked_) { munlock(addr_, mappedBytes_); }
+            munmap(addr_, mappedBytes_);
+            addr_ = nullptr;
+        }
+    }
+
+    std::string Name() const override
+    {
+        return "acl::odirect_mmap::" + std::to_string(device_);
+    }
+
+private:
+    size_t mappedBytes_ = 0;
+    bool registered_ = false;
+    bool locked_ = false;
 };
 
 class HugeSharedRegion : public CopyBuffer {

@@ -141,12 +141,15 @@ multi-stream case 在单卡内使用多个 stream 提交 H2D。当前 stream 数
 | `one_host_to_all_device_ce_multi_stream` | 一块 `aclrtMallocHost` host0 buffer | 主进程一次 batch 覆盖所有 device，单卡内多 stream | 聚合一行 | 同一块 host0 同时发往多卡，观察 multi-stream 聚合表现 |
 | `one_share_host_to_all_device_ce_multi_stream` | 一块 POSIX shared memory host buffer | fork fan-out，单卡内多 stream | 聚合一行 | shared host 多进程 fan-out + 单卡 multi-stream |
 | `all_host_to_all_device_ce_multi_stream` | 每张卡各自一块 host buffer | fork fan-out，单卡内多 stream | 聚合一行 | 非共享源的多卡并发 multi-stream |
+| `all_odirect_host_to_all_device_ce_multi_stream` | 每张卡各自一块 UCM O_DIRECT 风格 anonymous mmap host buffer | fork fan-out，单卡内多 stream | 聚合一行 | 对比 `aclrtMallocHost` 版本，覆盖 O_DIRECT local host buffer 形态 |
 
 建议和普通 CE batch 对比：
 
 ```bash
 ./build/module/copy/copy -t one_host_to_all_device_ce_batch -s 1M -n 64 -i 100 -d 8
 ./build/module/copy/copy -t one_host_to_all_device_ce_multi_stream -s 1M -n 64 -i 100 -d 8
+./build/module/copy/copy -t all_host_to_all_device_ce_multi_stream -s 1M -n 64 -i 100 -d 8
+./build/module/copy/copy -t all_odirect_host_to_all_device_ce_multi_stream -s 1M -n 64 -i 100 -d 8
 ```
 
 ### H2D FFTS Pipeline
