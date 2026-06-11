@@ -35,21 +35,27 @@ cmake --build build -j
 
 ## Fork 子进程 CPU 绑定
 
-所有使用 fork fan-out 的 Ascend case 默认会给每个子进程绑定一个不同的 allowed CPU。程序先读取当前进程的 CPU affinity mask，然后按 device 序号选择 CPU：
+所有使用 fork fan-out 的 Ascend case 默认会按 NPU 的 NUMA 亲和性设置子进程 CPU affinity。程序会先读取当前进程的 CPU affinity mask，再通过 `npu-smi info -m` 获取 device logic id 到 npu/chip 的映射，通过 `npu-smi info -t board` 获取 PCIe BDF，最后读取 `/sys/bus/pci/devices/<bdf>/numa_node` 和 `/sys/devices/system/node/nodeX/cpulist`。
+
+默认行为是把每个 device 子进程绑定到该 NPU 所在 NUMA node 内、且当前进程允许使用的 CPU 集合。这样比只绑定一个逻辑 CPU 更稳，避免 Ascend runtime 或 driver 侧辅助线程被压在单核上：
 
 ```text
-device0 -> 第 0 个 allowed CPU
-device1 -> 第 1 个 allowed CPU
+device0 -> device0 所在 NUMA node 的 allowed CPU 集合
+device1 -> device1 所在 NUMA node 的 allowed CPU 集合
 ...
 ```
+
+如果无法从 `npu-smi` 或 sysfs 拿到 NPU->NUMA 映射，会退回到当前进程的 allowed CPU 集合。
 
 可用环境变量：
 
 ```text
-COPY_FORK_BIND_CPU=0      关闭自动绑核
-COPY_FORK_CPU_VERBOSE=1   打印每个 device 子进程绑定到哪个 CPU
-COPY_FORK_CPU_OFFSET=N    从第 N 个 allowed CPU 开始分配
-COPY_FORK_CPU_STRIDE=N    按 stride 跳着分配 CPU，默认 1
+COPY_FORK_BIND_CPU=0             关闭自动绑核
+COPY_FORK_CPU_VERBOSE=1          打印每个 device 子进程绑定到哪个 NUMA 和 CPU 集合
+COPY_FORK_CPU_BIND_SCOPE=numa    默认值，绑定到 device-local NUMA 的 CPU 集合
+COPY_FORK_CPU_BIND_SCOPE=core    只绑定到 device-local NUMA 内的一个 CPU
+COPY_FORK_CPU_OFFSET=N           core 模式下从第 N 个 local CPU 开始分配
+COPY_FORK_CPU_STRIDE=N           core 模式下按 stride 跳着分配 CPU，默认 1
 ```
 
 例如：
@@ -116,7 +122,13 @@ HugeTLB case 使用 `memfd_create` 搭配 `MFD_HUGETLB` 和 `MFD_HUGE_2MB` 创�
 echo 8192 > /proc/sys/vm/nr_hugepages
 ```
 
-运行时观察 HugeTLB 使用量：
+一次性查看 HugeTLB 状态：
+
+```bash
+grep -i Huge /proc/meminfo
+```
+
+运行时持续观察 HugeTLB 使用量：
 
 ```bash
 watch -n 0.2 'grep -i Huge /proc/meminfo'
