@@ -1,45 +1,45 @@
-# FFTS Direct H2D io_num and O_DIRECT notes
+# FFTS Direct H2D io_num 与 O_DIRECT 说明
 
-## Current direct H2D implementation
+## 当前 direct H2D 实现
 
-`ffts-direct-h2d` is the direct FFTS SDMA host-to-device path in the Ascend copy benchmark. It does not use a CE staging buffer. The source address written into the FFTS SDMA descriptor is the device-visible mapped host pointer returned by `aclrtHostGetDevicePointer`, and the destination address is the device buffer pointer.
+`ffts-direct-h2d` 是 Ascend copy benchmark 中的 direct FFTS SDMA H2D 路径。它不经过 CE staging buffer，而是直接把 `aclrtHostGetDevicePointer` 返回的 device-visible mapped host pointer 写入 FFTS SDMA descriptor 的 source，把 device buffer pointer 写入 destination。
 
-The current cases are:
+当前 direct H2D 包含三个 case：
 
-| Case | Source buffer | Destination buffer | Meaning |
+| Case 名称 | 源 buffer | 目标 buffer | 含义 |
 | --- | --- | --- | --- |
-| `all_host_to_all_device_ffts_direct_h2d` | each child process allocates its own `aclrtMallocHost` buffer, registers it as mapped host memory | one device buffer per device | all host to all device |
-| `one_share_host_to_all_device_ffts_direct_h2d` | parent creates one POSIX shared memory region, each child maps and registers it | one device buffer per device | one shared host to all device |
-| `all_odirect_host_to_all_device_ffts_direct_h2d` | each child process allocates one UCM O_DIRECT style anonymous mmap buffer, then registers it as mapped and pinned host memory | one device buffer per device | local direct-IO style host buffer to all device |
+| `all_host_to_all_device_ffts_direct_h2d` | 每个子进程各自分配一块 `aclrtMallocHost` host buffer，并注册为 mapped host memory | 每张卡一块 device buffer | all host to all device |
+| `one_share_host_to_all_device_ffts_direct_h2d` | 父进程创建一块 POSIX shared memory，所有子进程 mmap 同一块源 buffer，并在各自进程里注册为 mapped host memory | 每张卡一块 device buffer | one shared host to all device |
+| `all_odirect_host_to_all_device_ffts_direct_h2d` | 每个子进程分配一块 UCM O_DIRECT local buffer 形态的 anonymous mmap host buffer，并注册为 mapped + pinned host memory | 每张卡一块 device buffer | local direct-IO style host buffer to all device |
 
-Validation is off by default. Set `COPY_FFTS_VALIDATE=1` to initialize a deterministic host pattern, copy through FFTS SDMA, read back the device buffer, and compare data.
+校验默认关闭。需要调试数据正确性时，设置 `COPY_FFTS_VALIDATE=1`，程序会初始化确定性的 host pattern，通过 FFTS SDMA 拷贝，再把 device buffer 读回 host 做比较。
 
-## `-n` and `--frags`
+## `-n` 与 `--frags`
 
-The benchmark keeps the old global `-n` option, but direct H2D now has two modes:
+copy benchmark 原来已经有全局 `-n` 参数。为了兼容旧逻辑，direct H2D 现在分成两种模式：
 
-| Mode | Command shape | Meaning |
+| 模式 | 命令形式 | 含义 |
 | --- | --- | --- |
-| Compatibility mode | no `--frags` or `-f` | `-n` is the total fragment count, and direct H2D submits one FFTS task containing all fragments. This matches the old behavior. |
-| Split-task mode | use `--frags <count>` or `-f <count>` | `-n` is the IO/task count, and `--frags` is the number of fragments inside each IO/task. The case allocates `-n * --frags` fragments and submits `-n` FFTS tasks per iteration. |
+| 兼容模式 | 不传 `--frags` 或 `-f` | `-n` 仍表示总 fragment 数，direct H2D 会把所有 fragment 合成一个 FFTS task 下发。这和旧行为一致。 |
+| 多 task 模式 | 传 `--frags <count>` 或 `-f <count>` | `-n` 表示 IO/task 数量，`--frags` 表示每个 IO/task 内包含多少个 fragment。程序会分配 `-n * --frags` 个 fragment，并在每次迭代里下发 `-n` 个 FFTS task。 |
 
-Examples:
+示例：
 
 ```bash
-# Old behavior: 1000 fragments are merged into one FFTS task.
+# 旧行为：1000 个 fragment 合并为 1 个 FFTS task。
 FFTS_MAX_READY_LANES=8 \
 ./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 4M -n 1000 -i 10 -d 8
 
-# New behavior: 1000 IO/tasks, one fragment in each task.
+# 新行为：1000 个 IO/task，每个 task 里 1 个 fragment。
 FFTS_MAX_READY_LANES=8 \
 ./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 4M -n 1000 --frags 1 -i 10 -d 8
 
-# New behavior: 1000 IO/tasks, four fragments in each task, 4000 fragments per device.
+# 新行为：1000 个 IO/task，每个 task 里 4 个 fragment，每张卡共 4000 个 fragment。
 FFTS_MAX_READY_LANES=8 \
 ./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 32K -n 1000 --frags 4 -i 10 -d 8
 ```
 
-For the default benchmark matrix, use lanes 8:
+默认 benchmark 配置建议固定 lanes 为 8：
 
 ```bash
 FFTS_MAX_READY_LANES=8 \
@@ -61,110 +61,110 @@ FFTS_MAX_READY_LANES=8 \
 ./build/module/copy/copy -t all_odirect_host_to_all_device_ffts_direct_h2d -s 32K -n 1000 --frags 1 -i 10 -d 8
 ```
 
-## Submit flow
+## 提交流程
 
-During `Prepare`, the direct H2D copy instance builds one copy spec per fragment:
+direct H2D copy instance 在 `Prepare` 阶段会为每个 fragment 构造一个 copy spec：
 
 ```text
 mapped host source pointer -> device destination pointer -> fragment size
 ```
 
-In compatibility mode, all copy specs are placed into one task group. In split-task mode, the copy specs are partitioned into groups of `--frags`. Each group calls the FFTS dispatcher separately, so `-n 1000 --frags 1` means 1000 `rtFftsPlusTaskLaunchWithFlag` submissions per measured iteration per device.
+兼容模式下，所有 copy spec 放进同一个 task group，只调用一次 FFTS dispatcher。多 task 模式下，copy spec 会按 `--frags` 分组，每个分组单独调用一次 dispatcher。因此 `-n 1000 --frags 1` 表示每次统计迭代、每张卡会调用 1000 次 `rtFftsPlusTaskLaunchWithFlag`。
 
-The result `Count` is still based on the total fragment count, not only the task count. In split-task mode:
+输出结果里的 `Count` 仍然按总 fragment 数统计，不只按 task 数统计：
 
 ```text
-Count per device = -n * --frags
-Aggregated Count = -n * --frags * device_count
+单卡 Count = -n * --frags
+聚合 Count = -n * --frags * device_count
 ```
 
-## O_DIRECT host buffer shape in UCM
+## UCM 开启 O_DIRECT 后的 host buffer 形态
 
-The UCM local CacheStore buffer has two host allocation paths:
+UCM local CacheStore buffer 有两种 host 分配路径：
 
-| Condition | Allocation path | Shape |
+| 条件 | 分配路径 | 实际内存形态 |
 | --- | --- | --- |
 | `io_direct=false` | `MakeHostBuffer` | `aclrtMallocHost` |
-| `io_direct=true` and shared buffer disabled | `MakeHostBuffer4DirectIo` | anonymous private `mmap`, first trying HugeTLB or gigantic HugeTLB, then falling back to transparent hugepage advice, followed by `mlock` and `aclrtHostRegisterV2(MAPPED | PINNED)` |
+| `io_direct=true` 且 shared buffer 关闭 | `MakeHostBuffer4DirectIo` | anonymous private `mmap`，先尝试 HugeTLB 或 gigantic HugeTLB，失败后 fallback 到 transparent hugepage advice，然后 `mlock`，再 `aclrtHostRegisterV2(MAPPED | PINNED)` |
 
-The new dev-sandbox case `all_odirect_host_to_all_device_ffts_direct_h2d` mirrors the second shape. It allocates anonymous mmap host memory, tries HugeTLB/gigantic HugeTLB first, falls back to THP advice, then registers the memory with `ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED` and uses `aclrtHostGetDevicePointer`.
+新增的 dev-sandbox case `all_odirect_host_to_all_device_ffts_direct_h2d` 对齐第二种形态。它会分配 anonymous mmap host memory，优先尝试 HugeTLB/gigantic HugeTLB，失败后使用 THP advice fallback，然后用 `ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED` 注册，并通过 `aclrtHostGetDevicePointer` 拿到 FFTS descriptor 可用的 mapped pointer。
 
-## Shared memory plus O_DIRECT
+## shared memory + O_DIRECT 的实际形态
 
-When shared memory is enabled, UCM does not switch the shared transfer buffer to the local `MakeHostBuffer4DirectIo` allocation path. The shared buffer remains POSIX shared memory:
+UCM 开启 shared memory 后，不会把 shared transfer buffer 切到 local `MakeHostBuffer4DirectIo` 路径。shared buffer 仍然是 POSIX shared memory：
 
 ```text
 shm_open/ftruncate -> mmap(MAP_SHARED) -> page-aligned data area -> aclrtHostRegisterV2(MAPPED | PINNED)
 ```
 
-For PCStore, the `ioDirect` flag is kept in the reader and affects file IO by opening files with `O_DIRECT`. The shared host buffer itself is still POSIX shared memory registered as mapped and pinned host memory. Therefore the existing `one_share_host_to_all_device_ffts_direct_h2d` case is the dev-sandbox equivalent for shared memory plus O_DIRECT.
+PCStore 里 `ioDirect` 会保存在 reader 上，影响的是文件读写时是否用 `O_DIRECT` 打开文件；shared host buffer 本身仍是 POSIX shared memory，并注册为 mapped + pinned host memory。因此 dev-sandbox 当前已有的 `one_share_host_to_all_device_ffts_direct_h2d` 就对应 shared memory + O_DIRECT 的 host buffer 形态。
 
-## Runtime FFTS launch usage
+## runtime FFTS launch 接口用法
 
-The current dispatcher includes either `runtime/rt_ffts_plus.h` or `rt_external_ffts.h`, then builds FFTS Plus task descriptors:
+当前 dispatcher 会包含 `runtime/rt_ffts_plus.h` 或 `rt_external_ffts.h`，然后构造 FFTS Plus task descriptor：
 
-| Field | Current value or meaning |
+| 字段 | 当前取值或含义 |
 | --- | --- |
 | `rtFftsPlusSqe_t::fftsType` | `RT_FFTS_PLUS_TYPE` |
-| `rtFftsPlusSqe_t::totalContextNum` | number of SDMA contexts in the current task |
-| `rtFftsPlusSqe_t::readyContextNum` | number of contexts that can run immediately; controlled by `FFTS_MAX_READY_LANES`, default 8 |
-| `rtFftsPlusSqe_t::preloadContextNum` | min of ready count and 128 |
+| `rtFftsPlusSqe_t::totalContextNum` | 当前 task 里的 SDMA context 数量 |
+| `rtFftsPlusSqe_t::readyContextNum` | 初始 ready 的 context 数量，由 `FFTS_MAX_READY_LANES` 控制，默认 8 |
+| `rtFftsPlusSqe_t::preloadContextNum` | `readyContextNum` 和 128 的较小值 |
 | `rtFftsPlusSqe_t::timeout` | 0 |
-| `rtFftsPlusSqe_t::subType` | `0x5A`, used here as a communication task |
-| `rtFftsPlusTaskInfo_t::descBuf` | host address of the context descriptor array |
-| `rtFftsPlusTaskInfo_t::descBufLen` | byte length of the descriptor array |
+| `rtFftsPlusSqe_t::subType` | `0x5A`，当前作为 communication task 使用 |
+| `rtFftsPlusTaskInfo_t::descBuf` | context descriptor array 的 host 地址 |
+| `rtFftsPlusTaskInfo_t::descBufLen` | descriptor array 的字节长度 |
 | `rtFftsPlusTaskInfo_t::descAddrType` | `RT_FFTS_PLUS_CTX_DESC_ADDR_TYPE_HOST` |
 | `rtFftsPlusTaskInfo_t::argsHandleInfoNum` | 0 |
 | `rtFftsPlusTaskInfo_t::argsHandleInfoPtr` | null |
 
-Each descriptor is an `rtFftsPlusSdmaCtx_t` viewed through the common 128-byte context type. The current context fields set `contextType = RT_CTX_TYPE_SDMA`, fill source and destination address high/low words, and fill the data length fields.
+每个 descriptor 是一个 `rtFftsPlusSdmaCtx_t`，通过公共的 128 字节 context 类型承载。当前 context 设置 `contextType = RT_CTX_TYPE_SDMA`，填充 source/destination 地址高低位，以及数据长度字段。
 
-In this checkout, the runtime headers are not present, so the full upstream enum list for every supported FFTS task/context type cannot be confirmed locally. The code that is visible in dev-sandbox and UCM only uses `RT_FFTS_PLUS_TYPE` plus `RT_CTX_TYPE_SDMA`. Future extensions should add new dispatchers around the runtime header's other `RT_CTX_TYPE_*` context layouts, update `subType` if the runtime requires another task class, and keep the current SDMA path unchanged.
+本 checkout 没有 runtime 头文件副本，因此本机无法枚举上游 runtime 支持的全部 FFTS task/context type。当前 dev-sandbox 和 UCM 可见代码只使用 `RT_FFTS_PLUS_TYPE` + `RT_CTX_TYPE_SDMA`。后续如果要扩展其他类型，应基于目标机 runtime 头文件里的其他 `RT_CTX_TYPE_*` layout 新增 dispatcher；如果 runtime 要求不同 task class，再调整 `subType`，同时保持当前 SDMA 路径不变。
 
-## Modified behavior summary
+## 修改点总结
 
-- Added `--frags` and `-f` to the copy CLI.
-- Kept direct H2D default behavior compatible by using one FFTS task when `--frags` is omitted.
-- Split direct H2D into multiple FFTS task launches when `--frags` is specified.
-- Kept validation disabled by default and retained `COPY_FFTS_VALIDATE=1`.
-- Added `all_odirect_host_to_all_device_ffts_direct_h2d` for UCM local O_DIRECT style host memory.
-- Documented that shared memory plus O_DIRECT still maps to POSIX shared memory registered as mapped and pinned host memory.
+- copy CLI 新增 `--frags` 和 `-f`。
+- direct H2D 默认不传 `--frags` 时仍保持旧行为：所有 fragment 只下发一个 FFTS task。
+- 传 `--frags` 后，direct H2D 会按 task 拆分，多次调用 `rtFftsPlusTaskLaunchWithFlag`。
+- 校验默认关闭，继续保留 `COPY_FFTS_VALIDATE=1` 手动开启。
+- 新增 `all_odirect_host_to_all_device_ffts_direct_h2d`，用于覆盖 UCM local O_DIRECT 风格 host memory。
+- 明确 shared memory + O_DIRECT 仍对应 POSIX shared memory + mapped/pinned register，dev-sandbox 由 `one_share_host_to_all_device_ffts_direct_h2d` 覆盖。
 
-## Test plan
+## 测试方式
 
-Local static checks:
+本地静态检查：
 
 ```bash
 git diff --check
 ```
 
-Build check when CMake is available:
+有 CMake 的环境可做编译检查：
 
 ```bash
 cmake -B build
 cmake --build build -j
 ```
 
-Runtime smoke tests on an Ascend host:
+Ascend 机器上的 runtime smoke：
 
 ```bash
-# Default validation off and compatibility mode.
+# 默认关闭校验，兼容模式。
 FFTS_MAX_READY_LANES=8 \
 ./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 32K -n 8 -i 1 -d 1
 
-# Manual validation on.
+# 手动开启校验。
 FFTS_MAX_READY_LANES=8 COPY_FFTS_VALIDATE=1 \
 ./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 32K -n 8 -i 1 -d 1
 
-# Split-task mode: 8 tasks, one fragment each.
+# 多 task 模式：8 个 task，每个 task 1 个 fragment。
 FFTS_MAX_READY_LANES=8 COPY_FFTS_VALIDATE=1 \
 ./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 32K -n 8 --frags 1 -i 1 -d 1
 
-# O_DIRECT style local host buffer.
+# O_DIRECT local host buffer 形态。
 FFTS_MAX_READY_LANES=8 COPY_FFTS_VALIDATE=1 \
 ./build/module/copy/copy -t all_odirect_host_to_all_device_ffts_direct_h2d -s 32K -n 8 --frags 1 -i 1 -d 1
 
-# Shared memory shape used by shared memory plus O_DIRECT.
+# shared memory + O_DIRECT 对应的 shared host buffer 形态。
 FFTS_MAX_READY_LANES=8 COPY_FFTS_VALIDATE=1 \
 ./build/module/copy/copy -t one_share_host_to_all_device_ffts_direct_h2d -s 32K -n 8 --frags 1 -i 1 -d 1
 ```
