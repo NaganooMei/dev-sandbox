@@ -14,51 +14,51 @@
 
 校验默认关闭。需要调试数据正确性时，设置 `COPY_FFTS_VALIDATE=1`，程序会初始化确定性的 host pattern，通过 FFTS SDMA 拷贝，再把 device buffer 读回 host 做比较。
 
-## `-n` 与 `--frags`
+## `-n` 与 `frags`
 
 copy benchmark 原来已经有全局 `-n` 参数。为了兼容旧逻辑，direct H2D 现在分成两种模式：
 
 | 模式 | 命令形式 | 含义 |
 | --- | --- | --- |
-| 兼容模式 | 不传 `--frags` 或 `-f` | `-n` 仍表示总 fragment 数，direct H2D 会把所有 fragment 合成一个 FFTS task 下发。这和旧行为一致。 |
-| 多 task 模式 | 传 `--frags <count>` 或 `-f <count>` | `-n` 表示 IO/task 数量，`--frags` 表示每个 IO/task 内包含多少个 fragment。程序会分配 `-n * --frags` 个 fragment，并在每次迭代里下发 `-n` 个 FFTS task。 |
+| 兼容模式 | 不传 `--frags`、`-frags` 或 `-f` | `-n` 仍表示总 fragment 数，direct H2D 会把所有 fragment 合成一个 FFTS task 下发。这和旧行为一致。 |
+| 多 task 模式 | 传 `--frags <count>`、`-frags <count>` 或 `-f <count>` | `-n` 表示 IO/task 数量，`frags` 表示每个 IO/task 内包含多少个 fragment。程序会分配 `-n * frags` 个 fragment，并在每次迭代里下发 `-n` 个 FFTS task。 |
 
 示例：
 
 ```bash
-# 旧行为：1000 个 fragment 合并为 1 个 FFTS task。
+# 旧行为：12800 个 fragment 合并为 1 个 FFTS task。
 FFTS_MAX_READY_LANES=8 \
-./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 4M -n 1000 -i 10 -d 8
+./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 4M -n 12800 -i 10 -d 8
 
-# 新行为：1000 个 IO/task，每个 task 里 1 个 fragment。
+# 新行为：100 个 IO/task，每个 task 里 128 个 fragment。
 FFTS_MAX_READY_LANES=8 \
-./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 4M -n 1000 --frags 1 -i 10 -d 8
+./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 4M -n 100 -frags 128 -i 10 -d 8
 
-# 新行为：1000 个 IO/task，每个 task 里 4 个 fragment，每张卡共 4000 个 fragment。
+# 新行为：100 个 IO/task，每个 task 里 128 个 fragment，每张卡共 12800 个 fragment。
 FFTS_MAX_READY_LANES=8 \
-./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 32K -n 1000 --frags 4 -i 10 -d 8
+./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 32K -n 100 -frags 128 -i 10 -d 8
 ```
 
 默认 benchmark 配置建议固定 lanes 为 8：
 
 ```bash
 FFTS_MAX_READY_LANES=8 \
-./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 4M -n 1000 --frags 1 -i 10 -d 8
+./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 4M -n 100 -frags 128 -i 10 -d 8
 
 FFTS_MAX_READY_LANES=8 \
-./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 32K -n 1000 --frags 1 -i 10 -d 8
+./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 32K -n 100 -frags 128 -i 10 -d 8
 
 FFTS_MAX_READY_LANES=8 \
-./build/module/copy/copy -t one_share_host_to_all_device_ffts_direct_h2d -s 4M -n 1000 --frags 1 -i 10 -d 8
+./build/module/copy/copy -t one_share_host_to_all_device_ffts_direct_h2d -s 4M -n 100 -frags 128 -i 10 -d 8
 
 FFTS_MAX_READY_LANES=8 \
-./build/module/copy/copy -t one_share_host_to_all_device_ffts_direct_h2d -s 32K -n 1000 --frags 1 -i 10 -d 8
+./build/module/copy/copy -t one_share_host_to_all_device_ffts_direct_h2d -s 32K -n 100 -frags 128 -i 10 -d 8
 
 FFTS_MAX_READY_LANES=8 \
-./build/module/copy/copy -t all_odirect_host_to_all_device_ffts_direct_h2d -s 4M -n 1000 --frags 1 -i 10 -d 8
+./build/module/copy/copy -t all_odirect_host_to_all_device_ffts_direct_h2d -s 4M -n 100 -frags 128 -i 10 -d 8
 
 FFTS_MAX_READY_LANES=8 \
-./build/module/copy/copy -t all_odirect_host_to_all_device_ffts_direct_h2d -s 32K -n 1000 --frags 1 -i 10 -d 8
+./build/module/copy/copy -t all_odirect_host_to_all_device_ffts_direct_h2d -s 32K -n 100 -frags 128 -i 10 -d 8
 ```
 
 ## 提交流程
@@ -69,42 +69,20 @@ direct H2D copy instance 在 `Prepare` 阶段会为每个 fragment 构造一个 
 mapped host source pointer -> device destination pointer -> fragment size
 ```
 
-兼容模式下，所有 copy spec 放进同一个 task group，只调用一次 FFTS dispatcher。多 task 模式下，copy spec 会按 `--frags` 分组，每个分组单独调用一次 dispatcher。因此 `-n 1000 --frags 1` 表示每次统计迭代、每张卡会调用 1000 次 `rtFftsPlusTaskLaunchWithFlag`。
+兼容模式下，所有 copy spec 放进同一个 task group，只调用一次 FFTS dispatcher。多 task 模式下，copy spec 会按 `frags` 分组，每个分组单独调用一次 dispatcher。因此 `-n 100 -frags 128` 表示每次统计迭代、每张卡会调用 100 次 `rtFftsPlusTaskLaunchWithFlag`，每次 task 里包含 128 个 fragment。
 
 输出结果里的 `Count` 仍然按总 fragment 数统计，不只按 task 数统计：
 
 ```text
-单卡 Count = -n * --frags
-聚合 Count = -n * --frags * device_count
+单卡 Count = -n * frags
+聚合 Count = -n * frags * device_count
 ```
 
-## 多进程 submit 与 CPU 绑定
+## 多进程 submit 与 CPU 亲和性
 
-所有 fork fan-out case 默认会把不同子进程绑定到不同 allowed CPU。程序会读取当前进程的 CPU affinity mask，再按 device 序号选择 CPU：
+所有 fork fan-out case 默认不主动绑核。子进程继承启动进程已有的 CPU affinity，因此如果需要限制 CPU 范围，建议在外部用 `taskset`、`numactl` 或调度系统统一控制。
 
-```text
-device0 -> 第 0 个 allowed CPU
-device1 -> 第 1 个 allowed CPU
-...
-```
-
-这样可以减少多进程同时 submit 时的 OS 调度抖动，尤其是 `-n > 1` 且 `--frags` 很小时，每个子进程会多次调用 `rtFftsPlusTaskLaunchWithFlag`，submit 耗时容易受到 CPU 抢占和 runtime/driver 侧锁竞争影响。
-
-可用环境变量：
-
-```text
-COPY_FORK_BIND_CPU=0      关闭自动绑核
-COPY_FORK_CPU_VERBOSE=1   打印每个 device 子进程绑定到哪个 CPU
-COPY_FORK_CPU_OFFSET=N    从第 N 个 allowed CPU 开始分配
-COPY_FORK_CPU_STRIDE=N    按 stride 跳着分配 CPU，默认 1
-```
-
-验证绑定：
-
-```bash
-COPY_FORK_CPU_VERBOSE=1 FFTS_MAX_READY_LANES=8 \
-./build/module/copy/copy -t one_share_host_to_all_device_ffts_direct_h2d -s 32K -n 1000 --frags 1 -i 10 -d 8
-```
+`-n 100 -frags 128` 模式下，每个子进程每次统计迭代会调用 100 次 `rtFftsPlusTaskLaunchWithFlag`。如果 submit 耗时波动较大，应优先在外部控制进程 CPU affinity，再对比是否存在跨 NUMA 调度影响。
 
 ## UCM 开启 O_DIRECT 后的 host buffer 形态
 
@@ -151,9 +129,9 @@ PCStore 里 `ioDirect` 会保存在 reader 上，影响的是文件读写时是�
 
 ## 修改点总结
 
-- copy CLI 新增 `--frags` 和 `-f`。
-- direct H2D 默认不传 `--frags` 时仍保持旧行为：所有 fragment 只下发一个 FFTS task。
-- 传 `--frags` 后，direct H2D 会按 task 拆分，多次调用 `rtFftsPlusTaskLaunchWithFlag`。
+- copy CLI 支持 `--frags`、`-frags` 和 `-f`。
+- direct H2D 默认不传 `--frags`、`-frags` 或 `-f` 时仍保持旧行为：所有 fragment 只下发一个 FFTS task。
+- 传 `--frags`、`-frags` 或 `-f` 后，direct H2D 会按 task 拆分，多次调用 `rtFftsPlusTaskLaunchWithFlag`。
 - 校验默认关闭，继续保留 `COPY_FFTS_VALIDATE=1` 手动开启。
 - 新增 `all_odirect_host_to_all_device_ffts_direct_h2d`，用于覆盖 UCM local O_DIRECT 风格 host memory。
 - 明确 shared memory + O_DIRECT 仍对应 POSIX shared memory + mapped/pinned register，dev-sandbox 由 `one_share_host_to_all_device_ffts_direct_h2d` 覆盖。
@@ -184,15 +162,15 @@ FFTS_MAX_READY_LANES=8 \
 FFTS_MAX_READY_LANES=8 COPY_FFTS_VALIDATE=1 \
 ./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 32K -n 8 -i 1 -d 1
 
-# 多 task 模式：8 个 task，每个 task 1 个 fragment。
+# 多 task 模式：100 个 task，每个 task 128 个 fragment。
 FFTS_MAX_READY_LANES=8 COPY_FFTS_VALIDATE=1 \
-./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 32K -n 8 --frags 1 -i 1 -d 1
+./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 32K -n 100 -frags 128 -i 1 -d 1
 
 # O_DIRECT local host buffer 形态。
 FFTS_MAX_READY_LANES=8 COPY_FFTS_VALIDATE=1 \
-./build/module/copy/copy -t all_odirect_host_to_all_device_ffts_direct_h2d -s 32K -n 8 --frags 1 -i 1 -d 1
+./build/module/copy/copy -t all_odirect_host_to_all_device_ffts_direct_h2d -s 32K -n 100 -frags 128 -i 1 -d 1
 
 # shared memory + O_DIRECT 对应的 shared host buffer 形态。
 FFTS_MAX_READY_LANES=8 COPY_FFTS_VALIDATE=1 \
-./build/module/copy/copy -t one_share_host_to_all_device_ffts_direct_h2d -s 32K -n 8 --frags 1 -i 1 -d 1
+./build/module/copy/copy -t one_share_host_to_all_device_ffts_direct_h2d -s 32K -n 100 -frags 128 -i 1 -d 1
 ```

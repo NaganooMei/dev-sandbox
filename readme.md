@@ -178,8 +178,8 @@ COPY_FFTS_VALIDATE=1 COPY_FFTS_PIPELINE_OBJECT_FRAGS=8 \
 当前 direct H2D 最新用法如下：
 
 - `COPY_FFTS_VALIDATE` 默认不设置，即默认不做数据校验；需要调试正确性时再设置 `COPY_FFTS_VALIDATE=1`。
-- 不传 `--frags` 或 `-f` 时，`-n` 仍表示总 fragment 数，所有 fragment 合并为一个 FFTS task 下发，兼容旧行为。
-- 传 `--frags <count>` 或 `-f <count>` 时，`-n` 表示 IO/task 数量，`--frags` 表示每个 IO/task 内的 fragment 数量。
+- 不传 `--frags`、`-frags` 或 `-f` 时，`-n` 仍表示总 fragment 数，所有 fragment 合并为一个 FFTS task 下发，兼容旧行为。
+- 传 `--frags <count>`、`-frags <count>` 或 `-f <count>` 时，`-n` 表示 IO/task 数量，`frags` 表示每个 IO/task 内的 fragment 数量。
 - `all_odirect_host_to_all_device_ffts_direct_h2d` 用于覆盖 UCM local O_DIRECT 风格 host buffer，也就是 anonymous mmap + HugeTLB/THP fallback + mapped/pinned register。
 - `one_share_host_to_all_device_ffts_direct_h2d` 对应 shared memory + O_DIRECT 的 host buffer 形态，因为 UCM shared buffer 在 O_DIRECT 下仍是 POSIX shared memory + mapped/pinned register。
 
@@ -197,22 +197,22 @@ COPY_FFTS_VALIDATE=1 COPY_FFTS_PIPELINE_OBJECT_FRAGS=8 \
 
 ```bash
 FFTS_MAX_READY_LANES=8 \
-./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 4M -n 1000 --frags 1 -i 10 -d 8
+./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 4M -n 100 -frags 128 -i 10 -d 8
 
 FFTS_MAX_READY_LANES=8 \
-./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 32K -n 1000 --frags 1 -i 10 -d 8
+./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 32K -n 100 -frags 128 -i 10 -d 8
 
 FFTS_MAX_READY_LANES=8 \
-./build/module/copy/copy -t one_share_host_to_all_device_ffts_direct_h2d -s 4M -n 1000 --frags 1 -i 10 -d 8
+./build/module/copy/copy -t one_share_host_to_all_device_ffts_direct_h2d -s 4M -n 100 -frags 128 -i 10 -d 8
 
 FFTS_MAX_READY_LANES=8 \
-./build/module/copy/copy -t one_share_host_to_all_device_ffts_direct_h2d -s 32K -n 1000 --frags 1 -i 10 -d 8
+./build/module/copy/copy -t one_share_host_to_all_device_ffts_direct_h2d -s 32K -n 100 -frags 128 -i 10 -d 8
 
 FFTS_MAX_READY_LANES=8 \
-./build/module/copy/copy -t all_odirect_host_to_all_device_ffts_direct_h2d -s 4M -n 1000 --frags 1 -i 10 -d 8
+./build/module/copy/copy -t all_odirect_host_to_all_device_ffts_direct_h2d -s 4M -n 100 -frags 128 -i 10 -d 8
 
 FFTS_MAX_READY_LANES=8 \
-./build/module/copy/copy -t all_odirect_host_to_all_device_ffts_direct_h2d -s 32K -n 1000 --frags 1 -i 10 -d 8
+./build/module/copy/copy -t all_odirect_host_to_all_device_ffts_direct_h2d -s 32K -n 100 -frags 128 -i 10 -d 8
 ```
 
 ## 单源多卡冲突排查顺序

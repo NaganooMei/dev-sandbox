@@ -39,8 +39,9 @@ struct ArgsParser {
         fmt::println("  -t <name>        Case name");
         fmt::println("  -s <size>        Data size in KB/MB (e.g., 4K, 16K, 1M, default: 512MB)");
         fmt::println("  -n <count>       Data number (default: 8). For ffts direct H2D with");
-        fmt::println("                   --frags, this is IO/task count.");
-        fmt::println("  -f, --frags <n>  Fragments per IO/task for ffts direct H2D");
+        fmt::println("                   --frags/-frags, this is IO/task count.");
+        fmt::println("  -f/--frags/-frags <n>");
+        fmt::println("                   Fragments per IO/task for ffts direct H2D");
         fmt::println("                   (default: 0, legacy single task)");
         fmt::println("  -i <count>       Iteration count (default: 128)");
         fmt::println("  -d <count>       Number of devices (default: 8)");
@@ -84,7 +85,7 @@ struct ArgsParser {
                 ctx.size = ParseSize(argv[++i]);
             } else if (arg == "-n" && i + 1 < argc) {
                 ctx.num = ParseUnsigned(argv[++i], "Invalid data count.");
-            } else if ((arg == "-f" || arg == "--frags") && i + 1 < argc) {
+            } else if ((arg == "-f" || arg == "--frags" || arg == "-frags") && i + 1 < argc) {
                 ctx.frags = ParseUnsigned(argv[++i], "Invalid fragment count.");
             } else if (arg == "-i" && i + 1 < argc) {
                 ctx.iter = ParseUnsigned(argv[++i], "Invalid iteration count.");
