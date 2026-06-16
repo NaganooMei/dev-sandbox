@@ -148,6 +148,7 @@ multi-stream case 在单卡内使用多个 stream 提交 H2D。当前 stream 数
 | `one_share_host_to_all_device_ffts_pipeline` | 一块 POSIX shared memory host buffer | fragmented device | 聚合一行 | POSIX shared host fork fan-out |
 | `one_huge_shm_to_all_device_ffts_pipeline` | 一块 HugeTLB shared host buffer | fragmented device | 聚合一行 | HugeTLB shared host fork fan-out |
 | `all_host_to_all_device_ffts_pipeline` | 每张卡各自一块 host buffer | fragmented device | 聚合一行 | 非共享源的多卡 fan-out |
+| `all_odirect_host_to_all_device_ffts_pipeline` | 每张卡各自一块 UCM O_DIRECT 风格 anonymous mmap host buffer | fragmented device | 聚合一行 | O_DIRECT 源的 H2D staging + FFTS pipeline |
 
 相关环境变量：
 
@@ -171,6 +172,13 @@ HugeTLB FFTS smoke：
 ```bash
 COPY_FFTS_VALIDATE=1 COPY_FFTS_PIPELINE_OBJECT_FRAGS=8 \
 ./build/module/copy/copy -t one_huge_shm_to_all_device_ffts_pipeline -s 32K -n 1024 -i 16 -d 8
+```
+
+O_DIRECT FFTS pipeline smoke：
+
+```bash
+COPY_FFTS_VALIDATE=1 COPY_FFTS_PIPELINE_OBJECT_FRAGS=8 \
+./build/module/copy/copy -t all_odirect_host_to_all_device_ffts_pipeline -s 32K -n 1024 -i 16 -d 8
 ```
 
 ### H2D FFTS Direct

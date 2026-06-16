@@ -287,3 +287,32 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     PrintValidationPassIfEnabled(*this, validationEnabled);
     ShowPipelineResult(*this, result, effectiveObjectFrags);
 }
+
+DEFINE_COPY_CASE_NO_RUNTIME(
+    AllODirectHost2AllDeviceFFTSPipelineCase,
+    "all_odirect_host_to_all_device_ffts_pipeline",
+    "copy all UCM O_DIRECT style host buffers to all fragmented device buffers with h2d "
+    "and ffts pipeline using fork submit",
+    ctx)
+{
+    CopyResult result;
+    const auto objectFrags = ReadFftsPipelineObjectFrags();
+    const auto effectiveObjectFrags = ctx.num == 0 ? objectFrags : std::min(objectFrags, ctx.num);
+    const bool validationEnabled = FftsValidationEnabled();
+
+    result.Push(ascend_copy::RunForkedCopyBatch(
+        ctx, "acl::odirect_mmap::all", "acl::device_frag::all", "h2d_ffts_pipeline-FORK",
+        [&](size_t device) {
+            ODirectHostCopyBuffer srcBuffer{device, ctx.size, ctx.num};
+            FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+            InitializeHostPatternedBuffer(srcBuffer);
+            ResetBuffer(dstBuffer);
+
+            H2DFFTSPipelineCopyInstance instance{ctx.iter, false, objectFrags};
+            auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer);
+            ValidateDeviceBufferIfEnabled(dstBuffer, validationEnabled);
+            return childResult;
+        }));
+    PrintValidationPassIfEnabled(*this, validationEnabled);
+    ShowPipelineResult(*this, result, effectiveObjectFrags);
+}
