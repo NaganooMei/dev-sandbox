@@ -118,6 +118,16 @@ inline unsigned long long CopyAscendPtrValue(const void* ptr)
     return static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(ptr));
 }
 
+inline std::uintptr_t AlignAddressUp(std::uintptr_t address, size_t alignment)
+{
+    ASSERT(alignment > 0);
+    const auto remainder = address % alignment;
+    if (remainder == 0) { return address; }
+    const auto padding = alignment - remainder;
+    ASSERT(address <= std::numeric_limits<std::uintptr_t>::max() - padding);
+    return address + padding;
+}
+
 inline bool ParseSmapsRange(const std::string& line, std::uintptr_t& start, std::uintptr_t& end)
 {
     const auto dash = line.find('-');
@@ -205,13 +215,39 @@ inline void* MmapODirectWithTransparentHugePage(size_t& bytes)
 {
     constexpr size_t kHugePageSize = 2ull * 1024ull * 1024ull;
     const auto alignedBytes = RoundUpToAlignment(bytes, kHugePageSize);
+    ASSERT(alignedBytes <= std::numeric_limits<size_t>::max() - kHugePageSize);
+    const auto reserveBytes = alignedBytes + kHugePageSize;
     constexpr auto prot = PROT_READ | PROT_WRITE;
-    constexpr auto flags = MAP_PRIVATE | MAP_ANONYMOUS;
+    constexpr auto reserveFlags = MAP_PRIVATE | MAP_ANONYMOUS;
+    constexpr auto fixedFlags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE | MAP_FIXED;
     const auto originalBytes = bytes;
     errno = 0;
     const auto start = std::chrono::steady_clock::now();
-    auto* ptr = mmap(nullptr, alignedBytes, prot, flags, -1, 0);
-    const auto mmapErrno = errno;
+    auto* reservePtr = mmap(nullptr, reserveBytes, PROT_NONE, reserveFlags, -1, 0);
+    const auto reserveErrno = errno;
+    void* ptr = MAP_FAILED;
+    int mmapErrno = reserveErrno;
+    size_t prefixBytes = 0;
+    size_t suffixBytes = 0;
+    if (reservePtr != MAP_FAILED) {
+        const auto reserveAddr = reinterpret_cast<std::uintptr_t>(reservePtr);
+        const auto alignedAddr = AlignAddressUp(reserveAddr, kHugePageSize);
+        prefixBytes = static_cast<size_t>(alignedAddr - reserveAddr);
+        suffixBytes = reserveBytes - prefixBytes - alignedBytes;
+        if (prefixBytes > 0) { ASSERT(munmap(reservePtr, prefixBytes) == 0); }
+        if (suffixBytes > 0) {
+            auto* suffixPtr = reinterpret_cast<void*>(alignedAddr + alignedBytes);
+            ASSERT(munmap(suffixPtr, suffixBytes) == 0);
+        }
+
+        errno = 0;
+        ptr = mmap(reinterpret_cast<void*>(alignedAddr), alignedBytes, prot, fixedFlags, -1, 0);
+        mmapErrno = errno;
+        if (ptr == MAP_FAILED) {
+            auto* middlePtr = reinterpret_cast<void*>(alignedAddr);
+            munmap(middlePtr, alignedBytes);
+        }
+    }
     if (ptr != MAP_FAILED) {
         errno = 0;
         const auto madviseStart = std::chrono::steady_clock::now();
@@ -227,10 +263,14 @@ inline void* MmapODirectWithTransparentHugePage(size_t& bytes)
     }
     if (CopyAscendBufferLogEnabled()) {
         std::fprintf(stderr,
-                     "[copy-buffer] odirect-thp mmap requested=%zu aligned=%zu flags=private|anon "
-                     "ptr=0x%llx errno=%d(%s) cost_us=%lld\n",
-                     originalBytes, alignedBytes, CopyAscendPtrValue(ptr), mmapErrno,
-                     std::strerror(mmapErrno), CopyAscendElapsedUs(start));
+                     "[copy-buffer] odirect-thp mmap requested=%zu aligned=%zu reserve=%zu "
+                     "prefix=%zu suffix=%zu flags=private|anon|populate|fixed-align "
+                     "reserve_ptr=0x%llx ptr=0x%llx reserve_errno=%d(%s) errno=%d(%s) "
+                     "cost_us=%lld\n",
+                     originalBytes, alignedBytes, reserveBytes, prefixBytes, suffixBytes,
+                     CopyAscendPtrValue(reservePtr), CopyAscendPtrValue(ptr), reserveErrno,
+                     std::strerror(reserveErrno), mmapErrno, std::strerror(mmapErrno),
+                     CopyAscendElapsedUs(start));
     }
     return ptr;
 }
