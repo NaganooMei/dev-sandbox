@@ -24,10 +24,14 @@
 #ifndef COPY_BUFFER_ASCEND_H
 #define COPY_BUFFER_ASCEND_H
 
+#include <chrono>
 #include <cerrno>
+#include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <fcntl.h>
+#include <fstream>
 #include <limits>
 #include <string>
 #include <sys/mman.h>
@@ -92,6 +96,83 @@ inline bool IsPageAligned(const void* ptr)
     return reinterpret_cast<std::uintptr_t>(ptr) % kPageSize == 0;
 }
 
+inline bool CopyAscendBufferLogEnabled()
+{
+    static const bool enabled = []() {
+        const auto* value = std::getenv("COPY_ASCEND_BUFFER_LOG");
+        return value != nullptr && std::strcmp(value, "0") != 0 &&
+               std::strcmp(value, "false") != 0 && std::strcmp(value, "FALSE") != 0;
+    }();
+    return enabled;
+}
+
+inline long long CopyAscendElapsedUs(std::chrono::steady_clock::time_point start)
+{
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::steady_clock::now() - start)
+        .count();
+}
+
+inline unsigned long long CopyAscendPtrValue(const void* ptr)
+{
+    return static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(ptr));
+}
+
+inline bool ParseSmapsRange(const std::string& line, std::uintptr_t& start, std::uintptr_t& end)
+{
+    const auto dash = line.find('-');
+    if (dash == std::string::npos) { return false; }
+    char* parseEnd = nullptr;
+    start = static_cast<std::uintptr_t>(std::strtoull(line.c_str(), &parseEnd, 16));
+    if (parseEnd == nullptr || *parseEnd != '-') { return false; }
+    end = static_cast<std::uintptr_t>(std::strtoull(parseEnd + 1, &parseEnd, 16));
+    return parseEnd != nullptr && end > start;
+}
+
+inline bool ShouldPrintSmapsField(const std::string& line)
+{
+    return line.rfind("Size:", 0) == 0 || line.rfind("KernelPageSize:", 0) == 0 ||
+           line.rfind("MMUPageSize:", 0) == 0 || line.rfind("Rss:", 0) == 0 ||
+           line.rfind("AnonHugePages:", 0) == 0 || line.rfind("ShmemPmdMapped:", 0) == 0 ||
+           line.rfind("FilePmdMapped:", 0) == 0 || line.rfind("Locked:", 0) == 0 ||
+           line.rfind("THPeligible:", 0) == 0 || line.rfind("VmFlags:", 0) == 0;
+}
+
+inline void LogSmapsForAddress(const char* label, const void* ptr)
+{
+    if (!CopyAscendBufferLogEnabled() || ptr == nullptr || ptr == MAP_FAILED) { return; }
+
+    std::ifstream smaps{"/proc/self/smaps"};
+    if (!smaps.is_open()) {
+        std::fprintf(stderr, "[copy-buffer] %s smaps=open-failed errno=%d(%s)\n", label, errno,
+                     std::strerror(errno));
+        return;
+    }
+
+    const auto target = reinterpret_cast<std::uintptr_t>(ptr);
+    std::string line;
+    bool inTarget = false;
+    while (std::getline(smaps, line)) {
+        std::uintptr_t start = 0;
+        std::uintptr_t end = 0;
+        if (ParseSmapsRange(line, start, end)) {
+            if (inTarget) { break; }
+            if (start <= target && target < end) {
+                inTarget = true;
+                std::fprintf(stderr, "[copy-buffer] %s smaps=%s\n", label, line.c_str());
+            }
+            continue;
+        }
+        if (inTarget && ShouldPrintSmapsField(line)) {
+            std::fprintf(stderr, "[copy-buffer] %s %s\n", label, line.c_str());
+        }
+    }
+    if (!inTarget) {
+        std::fprintf(stderr, "[copy-buffer] %s smaps=not-found ptr=0x%llx\n", label,
+                     CopyAscendPtrValue(ptr));
+    }
+}
+
 inline void* MmapODirectHugeTlb(size_t& bytes, bool useGiganticPages)
 {
     constexpr size_t kHugePageSize = 2ull * 1024ull * 1024ull;
@@ -104,8 +185,19 @@ inline void* MmapODirectHugeTlb(size_t& bytes, bool useGiganticPages)
     const auto pageFlag = useGiganticPages ? kGiganticPageFlag : kHugePageFlag;
     constexpr auto prot = PROT_READ | PROT_WRITE;
     const auto flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | pageFlag;
+    const auto originalBytes = bytes;
+    errno = 0;
+    const auto start = std::chrono::steady_clock::now();
     auto* ptr = mmap(nullptr, alignedBytes, prot, flags, -1, 0);
+    const auto mmapErrno = errno;
     if (ptr != MAP_FAILED) { bytes = alignedBytes; }
+    if (CopyAscendBufferLogEnabled()) {
+        std::fprintf(stderr,
+                     "[copy-buffer] odirect-hugetlb page=%zu requested=%zu aligned=%zu ptr=0x%llx "
+                     "errno=%d(%s) cost_us=%lld\n",
+                     pageSize, originalBytes, alignedBytes, CopyAscendPtrValue(ptr), mmapErrno,
+                     std::strerror(mmapErrno), CopyAscendElapsedUs(start));
+    }
     return ptr;
 }
 
@@ -115,10 +207,30 @@ inline void* MmapODirectWithTransparentHugePage(size_t& bytes)
     const auto alignedBytes = RoundUpToAlignment(bytes, kHugePageSize);
     constexpr auto prot = PROT_READ | PROT_WRITE;
     constexpr auto flags = MAP_PRIVATE | MAP_ANONYMOUS;
+    const auto originalBytes = bytes;
+    errno = 0;
+    const auto start = std::chrono::steady_clock::now();
     auto* ptr = mmap(nullptr, alignedBytes, prot, flags, -1, 0);
+    const auto mmapErrno = errno;
     if (ptr != MAP_FAILED) {
-        madvise(ptr, alignedBytes, MADV_HUGEPAGE);
+        errno = 0;
+        const auto madviseStart = std::chrono::steady_clock::now();
+        const auto madviseStatus = madvise(ptr, alignedBytes, MADV_HUGEPAGE);
+        const auto madviseErrno = errno;
+        if (CopyAscendBufferLogEnabled()) {
+            std::fprintf(stderr,
+                         "[copy-buffer] odirect-thp madvise status=%d errno=%d(%s) cost_us=%lld\n",
+                         madviseStatus, madviseErrno, std::strerror(madviseErrno),
+                         CopyAscendElapsedUs(madviseStart));
+        }
         bytes = alignedBytes;
+    }
+    if (CopyAscendBufferLogEnabled()) {
+        std::fprintf(stderr,
+                     "[copy-buffer] odirect-thp mmap requested=%zu aligned=%zu flags=private|anon "
+                     "ptr=0x%llx errno=%d(%s) cost_us=%lld\n",
+                     originalBytes, alignedBytes, CopyAscendPtrValue(ptr), mmapErrno,
+                     std::strerror(mmapErrno), CopyAscendElapsedUs(start));
     }
     return ptr;
 }
@@ -127,6 +239,10 @@ inline void* MmapODirectHostBuffer(size_t& bytes)
 {
     constexpr size_t kGiganticPageSize = 1ull * 1024ull * 1024ull * 1024ull;
     const bool useGiganticPages = bytes >= kGiganticPageSize;
+    if (CopyAscendBufferLogEnabled()) {
+        std::fprintf(stderr, "[copy-buffer] odirect-select requested=%zu try_gigantic=%d\n", bytes,
+                     useGiganticPages ? 1 : 0);
+    }
     auto* ptr = MmapODirectHugeTlb(bytes, useGiganticPages);
     if (ptr == MAP_FAILED && useGiganticPages) { ptr = MmapODirectHugeTlb(bytes, false); }
     if (ptr == MAP_FAILED) { ptr = MmapODirectWithTransparentHugePage(bytes); }
@@ -172,10 +288,36 @@ public:
         ASCEND_ASSERT(aclrtSetDevice(device_));
         constexpr auto prot = PROT_READ | PROT_WRITE;
         constexpr auto flags = MAP_ANONYMOUS | MAP_PRIVATE | MAP_POPULATE;
+        errno = 0;
+        const auto mmapStart = std::chrono::steady_clock::now();
         addr_ = mmap(nullptr, total, prot, flags, -1, 0);
+        const auto mmapErrno = errno;
+        if (CopyAscendBufferLogEnabled()) {
+            std::fprintf(stderr,
+                         "[copy-buffer] anon mmap device=%zu requested=%zu flags=anon|private|"
+                         "populate ptr=0x%llx errno=%d(%s) cost_us=%lld page_aligned=%d\n",
+                         device_, total, CopyAscendPtrValue(addr_), mmapErrno,
+                         std::strerror(mmapErrno), CopyAscendElapsedUs(mmapStart),
+                         IsPageAligned(addr_) ? 1 : 0);
+        }
         ASSERT(addr_ != MAP_FAILED);
+        LogSmapsForAddress("anon-after-mmap", addr_);
+        const auto memsetStart = std::chrono::steady_clock::now();
         std::memset(addr_, 'a', total);
-        ASCEND_ASSERT(aclrtHostRegisterV2(addr_, total, ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED));
+        if (CopyAscendBufferLogEnabled()) {
+            std::fprintf(stderr, "[copy-buffer] anon memset bytes=%zu cost_us=%lld\n", total,
+                         CopyAscendElapsedUs(memsetStart));
+        }
+        LogSmapsForAddress("anon-after-memset", addr_);
+        const auto registerStart = std::chrono::steady_clock::now();
+        const auto registerStatus =
+            aclrtHostRegisterV2(addr_, total, ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED);
+        if (CopyAscendBufferLogEnabled()) {
+            std::fprintf(stderr, "[copy-buffer] anon register bytes=%zu status=%d cost_us=%lld\n",
+                         total, registerStatus, CopyAscendElapsedUs(registerStart));
+        }
+        ASCEND_ASSERT(registerStatus);
+        LogSmapsForAddress("anon-after-register", addr_);
     }
     ~AnonymousCopyBuffer() override
     {
@@ -196,15 +338,48 @@ public:
         const auto total = CheckedTotalBytes(size, number);
         mappedBytes_ = total;
         addr_ = MmapODirectHostBuffer(mappedBytes_);
+        if (CopyAscendBufferLogEnabled()) {
+            std::fprintf(stderr,
+                         "[copy-buffer] odirect mmap-result device=%zu total=%zu mapped=%zu ptr=0x%llx "
+                         "page_aligned=%d\n",
+                         device_, total, mappedBytes_, CopyAscendPtrValue(addr_),
+                         IsPageAligned(addr_) ? 1 : 0);
+        }
         ASSERT(addr_ != MAP_FAILED);
         ASSERT(IsPageAligned(addr_));
+        LogSmapsForAddress("odirect-after-mmap", addr_);
+        const auto memsetStart = std::chrono::steady_clock::now();
         std::memset(addr_, 'o', total);
-        locked_ = (mlock(addr_, mappedBytes_) == 0);
+        if (CopyAscendBufferLogEnabled()) {
+            std::fprintf(stderr, "[copy-buffer] odirect memset bytes=%zu cost_us=%lld\n", total,
+                         CopyAscendElapsedUs(memsetStart));
+        }
+        LogSmapsForAddress("odirect-after-memset", addr_);
+        errno = 0;
+        const auto mlockStart = std::chrono::steady_clock::now();
+        const auto mlockStatus = mlock(addr_, mappedBytes_);
+        const auto mlockErrno = errno;
+        locked_ = (mlockStatus == 0);
+        if (CopyAscendBufferLogEnabled()) {
+            std::fprintf(stderr,
+                         "[copy-buffer] odirect mlock bytes=%zu status=%d errno=%d(%s) cost_us=%lld\n",
+                         mappedBytes_, mlockStatus, mlockErrno, std::strerror(mlockErrno),
+                         CopyAscendElapsedUs(mlockStart));
+        }
+        LogSmapsForAddress("odirect-after-mlock", addr_);
 
         ASCEND_ASSERT(aclrtSetDevice(device_));
-        ASCEND_ASSERT(
-            aclrtHostRegisterV2(addr_, mappedBytes_, ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED));
+        const auto registerStart = std::chrono::steady_clock::now();
+        const auto registerStatus =
+            aclrtHostRegisterV2(addr_, mappedBytes_, ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED);
+        if (CopyAscendBufferLogEnabled()) {
+            std::fprintf(stderr,
+                         "[copy-buffer] odirect register bytes=%zu status=%d cost_us=%lld\n",
+                         mappedBytes_, registerStatus, CopyAscendElapsedUs(registerStart));
+        }
+        ASCEND_ASSERT(registerStatus);
         registered_ = true;
+        LogSmapsForAddress("odirect-after-register", addr_);
     }
 
     ~ODirectHostCopyBuffer() override
