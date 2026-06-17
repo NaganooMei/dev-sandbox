@@ -226,6 +226,33 @@ DEFINE_COPY_CASE(Anonymous2DeviceCECase, "anonymous_to_device_ce",
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
 
+DEFINE_COPY_CASE(ODirectHost2DeviceCECase, "odirect_to_device_ce",
+                 "memcpy from UCM O_DIRECT style host to device one by one", ctx)
+{
+    CopyResult result;
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        ODirectHostCopyBuffer srcBuffer{device, ctx.size, ctx.num};
+        DeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+        H2DCECopyInstance instance{ctx.iter, false};
+        result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
+    }
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
+DEFINE_COPY_CASE(Anonymous2DeviceCEMultiStreamCase, "anonymous_to_device_ce_multi_stream",
+                 "memcpy from anonymous to device with ce using multi stream one by one", ctx)
+{
+    constexpr auto streamCount = 48;
+    CopyResult result;
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        AnonymousCopyBuffer srcBuffer{device, ctx.size, ctx.num};
+        DeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+        H2DCEMultiStreamCopyInstance instance{ctx.iter, false, streamCount};
+        result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
+    }
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
 DEFINE_COPY_CASE(Host2DeviceCEMultiStreamCase, "host_to_device_ce_multi_stream",
                  "memcpy from host to device with ce using multi stream one by one", ctx)
 {
@@ -284,6 +311,24 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     result.Push(ascend_copy::RunForkedCopyBatch(
         ctx, "acl::host::all", "acl::device::all", "CE-MS-FORK", [&](size_t device) {
             HostCopyBuffer srcBuffer{device, ctx.size, ctx.num};
+            DeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+            H2DCEMultiStreamCopyInstance instance{ctx.iter, false, streamCount};
+            return instance.DoCopy(&srcBuffer, &dstBuffer);
+        }));
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
+DEFINE_COPY_CASE_NO_RUNTIME(
+    AllAnonymousHost2AllDeviceCEMultiStreamCase,
+    "all_anonymous_host_to_all_device_ce_multi_stream",
+    "memcpy from all anonymous host to all device with ce using multi stream and fork submit",
+    ctx)
+{
+    constexpr auto streamCount = 48;
+    CopyResult result;
+    result.Push(ascend_copy::RunForkedCopyBatch(
+        ctx, "acl::anon::all", "acl::device::all", "CE-MS-FORK", [&](size_t device) {
+            AnonymousCopyBuffer srcBuffer{device, ctx.size, ctx.num};
             DeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
             H2DCEMultiStreamCopyInstance instance{ctx.iter, false, streamCount};
             return instance.DoCopy(&srcBuffer, &dstBuffer);
