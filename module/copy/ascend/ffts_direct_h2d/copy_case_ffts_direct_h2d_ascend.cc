@@ -102,12 +102,26 @@ void PrintFftsDirectValidationPassIfEnabled(const CopyCase& copyCase, bool enabl
     if (enabled) { std::cout << "[validation] " << copyCase.Key() << " PASS\n"; }
 }
 
-size_t FftsDirectTotalFragments(const CopyCase::Context& ctx)
+size_t FftsDirectBufferCount(const CopyCase::Context& ctx)
 {
     ASSERT(ctx.num > 0);
+    if (ctx.ioMode == CopyIoMode::GLM51) { return ctx.num; }
     if (ctx.frags == 0) { return ctx.num; }
     ASSERT(ctx.num <= std::numeric_limits<size_t>::max() / ctx.frags);
     return ctx.num * ctx.frags;
+}
+
+size_t FftsDirectStreamCount(const CopyCase::Context& ctx)
+{
+    constexpr size_t defaultStreamCount = 1;
+    return ctx.streams == 0 ? defaultStreamCount : ctx.streams;
+}
+
+std::string FftsDirectMethodName(const CopyCase::Context& ctx)
+{
+    return "ffts-direct-h2d-" + std::to_string(FftsDirectStreamCount(ctx)) + "s" +
+           CopySubmitModeSuffix(ctx.submitMode) +
+           (ctx.ioMode == CopyIoMode::GLM51 ? "-GLM51" : "");
 }
 
 }  // namespace
@@ -120,15 +134,18 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     CopyResult result;
     const bool validationEnabled = FftsDirectValidationEnabled();
     result.Push(ascend_copy::RunForkedCopyBatch(
-        ctx, "acl::host_mapped::all", "acl::device::all", "ffts-direct-h2d",
+        ctx, "acl::host_mapped::all", "acl::device::all", FftsDirectMethodName(ctx),
         [&](size_t device) {
-            const auto fragments = FftsDirectTotalFragments(ctx);
-            FftsMappedHostCopyBuffer srcBuffer{device, ctx.size, fragments};
-            DeviceCopyBuffer dstBuffer{device, ctx.size, fragments};
+            const auto bufferCount = FftsDirectBufferCount(ctx);
+            const auto bufferSize = CopyIoBufferSize(ctx.ioMode, ctx.size);
+            FftsMappedHostCopyBuffer srcBuffer{device, bufferSize, bufferCount};
+            DeviceCopyBuffer dstBuffer{device, bufferSize, bufferCount};
             InitializeFftsDirectHostPatternedBuffer(srcBuffer);
             ResetFftsDirectDeviceBuffer(dstBuffer);
 
-            FftsDirectH2DCopyInstance instance{ctx.iter, false, ctx.frags};
+            FftsDirectH2DCopyInstance instance{ctx.iter, false, ctx.frags,
+                                               FftsDirectStreamCount(ctx), ctx.ioMode,
+                                               ctx.submitMode};
             auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer);
             ValidateFftsDirectDeviceBufferIfEnabled(dstBuffer, validationEnabled);
             return childResult;
@@ -147,15 +164,18 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     CopyResult result;
     const bool validationEnabled = FftsDirectValidationEnabled();
     result.Push(ascend_copy::RunForkedCopyBatch(
-        ctx, "acl::odirect_mmap::all", "acl::device::all", "ffts-direct-h2d",
+        ctx, "acl::odirect_mmap::all", "acl::device::all", FftsDirectMethodName(ctx),
         [&](size_t device) {
-            const auto fragments = FftsDirectTotalFragments(ctx);
-            FftsODirectMappedHostCopyBuffer srcBuffer{device, ctx.size, fragments};
-            DeviceCopyBuffer dstBuffer{device, ctx.size, fragments};
+            const auto bufferCount = FftsDirectBufferCount(ctx);
+            const auto bufferSize = CopyIoBufferSize(ctx.ioMode, ctx.size);
+            FftsODirectMappedHostCopyBuffer srcBuffer{device, bufferSize, bufferCount};
+            DeviceCopyBuffer dstBuffer{device, bufferSize, bufferCount};
             InitializeFftsDirectHostPatternedBuffer(srcBuffer);
             ResetFftsDirectDeviceBuffer(dstBuffer);
 
-            FftsDirectH2DCopyInstance instance{ctx.iter, false, ctx.frags};
+            FftsDirectH2DCopyInstance instance{ctx.iter, false, ctx.frags,
+                                               FftsDirectStreamCount(ctx), ctx.ioMode,
+                                               ctx.submitMode};
             auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer);
             ValidateFftsDirectDeviceBufferIfEnabled(dstBuffer, validationEnabled);
             return childResult;
@@ -171,19 +191,23 @@ DEFINE_COPY_CASE_NO_RUNTIME(
 {
     CopyResult result;
     const bool validationEnabled = FftsDirectValidationEnabled();
-    const auto fragments = FftsDirectTotalFragments(ctx);
+    const auto bufferCount = FftsDirectBufferCount(ctx);
+    const auto bufferSize = CopyIoBufferSize(ctx.ioMode, ctx.size);
     FftsMappedSharedHostRegion srcRegion{"one_share_host_to_all_device_ffts_direct_h2d", 0,
-                                         ctx.size, fragments};
+                                         bufferSize, bufferCount};
     InitializeFftsDirectHostPatternedBuffer(srcRegion);
     result.Push(ascend_copy::RunForkedCopyBatch(
-        ctx, srcRegion.Name(), "acl::device::all", "ffts-direct-h2d", [&](size_t device) {
+        ctx, ctx.ioMode == CopyIoMode::GLM51 ? "acl::shm::glm5.1" : srcRegion.Name(),
+        "acl::device::all", FftsDirectMethodName(ctx), [&](size_t device) {
             FftsMappedSharedHostCopyBuffer srcBuffer{srcRegion.ShmName(),
-                                                    srcRegion.MappedBytes(), device, ctx.size,
-                                                    fragments};
-            DeviceCopyBuffer dstBuffer{device, ctx.size, fragments};
+                                                    srcRegion.MappedBytes(), device, bufferSize,
+                                                    bufferCount};
+            DeviceCopyBuffer dstBuffer{device, bufferSize, bufferCount};
             ResetFftsDirectDeviceBuffer(dstBuffer);
 
-            FftsDirectH2DCopyInstance instance{ctx.iter, false, ctx.frags};
+            FftsDirectH2DCopyInstance instance{ctx.iter, false, ctx.frags,
+                                               FftsDirectStreamCount(ctx), ctx.ioMode,
+                                               ctx.submitMode};
             auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer);
             ValidateFftsDirectDeviceBufferIfEnabled(dstBuffer, validationEnabled);
             return childResult;

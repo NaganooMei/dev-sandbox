@@ -27,6 +27,12 @@ cmake --build build -j
 -t <name>   case 名称，可重复指定多个 -t
 -s <size>   单个数据块大小，例如 16K、1M、512M
 -n <count>  每个 buffer 里的数据块数量
+-f <count>  FFTS 每个 task 的 fragment 数；glm5.1 模式固定为 3
+-S <count>  每张卡的 stream 数；CE 默认 48，FFTS Direct 默认 1
+--io-mode uniform|glm5.1
+             IO 布局；glm5.1 下一个 block 固定包含 128K、16K、32K
+--submit-mode stream-major|round-robin
+             按 stream 整批下发，或按 block 轮询 stream 下发
 -i <count>  统计迭代次数
 -d <count>  设备数量
 ```
@@ -117,7 +123,9 @@ watch -n 0.2 'grep -i Huge /proc/meminfo'
 
 ### Multi-Stream CE
 
-multi-stream case 在单卡内使用多个 stream 提交 H2D。当前 stream 数在代码中固定为 48。
+multi-stream case 在单卡内使用多个 stream 提交 H2D。默认 stream 数为 48，可通过 `-S`、`--streams` 或 `--stream-count` 调整。
+
+`--submit-mode stream-major` 保留原来的连续分块、逐 stream 下发行为；`--submit-mode round-robin` 按 block 在 stream 间轮询下发。glm5.1 模式下，一个 block 的 128K、16K、32K 三条 IO 始终进入同一个 stream，不会被轮询拆开。
 
 | case | 源 buffer | 提交方式 | 输出口径 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -188,6 +196,9 @@ COPY_FFTS_VALIDATE=1 COPY_FFTS_PIPELINE_OBJECT_FRAGS=8 \
 - `COPY_FFTS_VALIDATE` 默认不设置，即默认不做数据校验；需要调试正确性时再设置 `COPY_FFTS_VALIDATE=1`。
 - 不传 `--frags`、`-frags` 或 `-f` 时，`-n` 仍表示总 fragment 数，所有 fragment 合并为一个 FFTS task 下发，兼容旧行为。
 - 传 `--frags <count>`、`-frags <count>` 或 `-f <count>` 时，`-n` 表示 IO/task 数量，`frags` 表示每个 IO/task 内的 fragment 数量。
+- `-S`、`--streams` 或 `--stream-count` 控制每张卡的 FFTS stream 数，默认值为 1。实际 stream 数不会超过 task/block 数。
+- `--submit-mode stream-major` 先下发一个 stream 的全部 task，再处理下一个 stream；`--submit-mode round-robin` 按 task/block 轮询 stream 下发。
+- `--io-mode glm5.1 -f 3` 启用服务 IO 布局：`-n` 表示 block 数，每个 block 是一个 FFTS task，内部包含 128K、16K、32K 三个 SDMA context，总计 176K。
 - `all_odirect_host_to_all_device_ffts_direct_h2d` 用于覆盖 UCM local O_DIRECT 风格 host buffer，也就是 anonymous mmap + HugeTLB/THP fallback + mapped/pinned register。
 - `one_share_host_to_all_device_ffts_direct_h2d` 对应 shared memory + O_DIRECT 的 host buffer 形态，因为 UCM shared buffer 在 O_DIRECT 下仍是 POSIX shared memory + mapped/pinned register。
 
@@ -222,6 +233,23 @@ FFTS_MAX_READY_LANES=8 \
 FFTS_MAX_READY_LANES=8 \
 ./build/module/copy/copy -t all_odirect_host_to_all_device_ffts_direct_h2d -s 32K -n 100 -frags 128 -i 10 -d 8
 ```
+
+GLM5.1 的 shared-host CE/FFTS 对比命令：
+
+```bash
+./build/module/copy/copy \
+  -t one_share_host_to_all_device_ce_multi_stream \
+  --io-mode glm5.1 -f 3 -n 1024 -S 16 \
+  --submit-mode round-robin -i 10 -d 16
+
+COPY_FFTS_VALIDATE=1 FFTS_MAX_READY_LANES=3 \
+./build/module/copy/copy \
+  -t one_share_host_to_all_device_ffts_direct_h2d \
+  --io-mode glm5.1 -f 3 -n 1024 -S 16 \
+  --submit-mode round-robin -i 10 -d 16
+```
+
+这两个命令每张卡每次迭代都传输 `1024 * 176K`；聚合输出的 `Size(KB)` 为 176，`Count` 为 `1024 * 16`。
 
 ## 单源多卡冲突排查顺序
 

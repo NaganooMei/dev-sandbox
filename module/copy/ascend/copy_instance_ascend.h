@@ -24,6 +24,7 @@
 #ifndef COPY_INSTANCE_ASCEND_H
 #define COPY_INSTANCE_ASCEND_H
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
@@ -36,6 +37,7 @@
 #include <vector>
 #include "copy_buffer.h"
 #include "copy_instance.h"
+#include "copy_options.h"
 #include "error_handle_ascend.h"
 
 struct AscendStreamContext {
@@ -399,6 +401,17 @@ public:
 
 class H2DCEMultiStreamCopyInstance : public CopyInstance {
 protected:
+    struct CopySpec {
+        void* dst = nullptr;
+        void* src = nullptr;
+        size_t size = 0;
+    };
+
+    struct CopyTask {
+        size_t contextIndex = 0;
+        std::vector<CopySpec> copies;
+    };
+
     struct SubmitWorker {
         std::mutex mutex;
         std::condition_variable ready;
@@ -413,57 +426,90 @@ protected:
 
     std::vector<AscendStreamContext> contexts_;
     std::vector<std::vector<size_t>> contextGroups_;
+    std::vector<std::vector<size_t>> contextTasks_;
+    std::vector<CopyTask> tasks_;
+    std::vector<std::vector<size_t>> taskGroups_;
     std::vector<std::unique_ptr<SubmitWorker>> submitWorkers_;
     aclrtEvent totalStart_;
     aclrtEvent totalEnd_;
     size_t streamCount_;
+    CopyIoMode ioMode_;
+    CopySubmitMode submitMode_;
 
     void Prepare(const std::vector<const CopyBuffer*>& srcBuffers,
                  const std::vector<const CopyBuffer*>& dstBuffers) override
     {
         contexts_.clear();
         contextGroups_.clear();
+        contextTasks_.clear();
+        tasks_.clear();
+        taskGroups_.clear();
+        ASSERT(!srcBuffers.empty());
+        ASSERT(srcBuffers.size() == dstBuffers.size());
+        ASSERT(streamCount_ > 0);
         const auto bufferNumber = srcBuffers.size();
         contexts_.reserve(bufferNumber * streamCount_);
+        contextTasks_.reserve(bufferNumber * streamCount_);
         contextGroups_.reserve(bufferNumber);
+        taskGroups_.reserve(bufferNumber);
 
         for (size_t i = 0; i < bufferNumber; i++) {
             auto& src = *srcBuffers[i];
             auto& dst = *dstBuffers[i];
             ASSERT(src.Number() == dst.Number());
             ASSERT(src.Size() == dst.Size());
+            ASSERT(src.Number() > 0);
+            if (ioMode_ == CopyIoMode::GLM51) { ASSERT(src.Size() == kGlm51BlockBytes); }
 
-            size_t bufferCount = src.Number();
-            size_t base = bufferCount / streamCount_;
-            size_t remainder = bufferCount % streamCount_;
-            size_t deviceId = AffinityDeviceId(src, dst);
+            const size_t taskCount = src.Number();
+            const size_t activeStreamCount = std::min(streamCount_, taskCount);
+            const size_t deviceId = AffinityDeviceId(src, dst);
             ASCEND_ASSERT(aclrtSetDevice(deviceId));
 
-            size_t offset = 0;
             std::vector<size_t> group;
-            group.reserve(streamCount_);
-            for (size_t s = 0; s < streamCount_; s++) {
-                size_t count = base + (s < remainder ? 1 : 0);
-                if (count == 0) continue;
-
+            group.reserve(activeStreamCount);
+            for (size_t stream = 0; stream < activeStreamCount; ++stream) {
                 AscendStreamContext ctx;
                 ctx.deviceId = deviceId;
                 ctx.size = src.Size();
                 ASCEND_ASSERT(aclrtCreateStream(&ctx.stream));
                 ASCEND_ASSERT(aclrtCreateEvent(&ctx.endEvent));
-                ctx.src.reserve(count);
-                ctx.dst.reserve(count);
-                for (size_t j = 0; j < count; j++) {
-                    ctx.src.push_back(src[offset + j]);
-                    ctx.dst.push_back(dst[offset + j]);
-                }
                 group.push_back(contexts_.size());
                 contexts_.push_back(std::move(ctx));
-                offset += count;
+                contextTasks_.emplace_back();
+            }
+
+            std::vector<size_t> groupTasks;
+            groupTasks.reserve(taskCount);
+            for (size_t taskIndex = 0; taskIndex < taskCount; ++taskIndex) {
+                const size_t stream = CopyTaskStreamIndex(submitMode_, taskIndex, taskCount,
+                                                          activeStreamCount);
+
+                CopyTask task;
+                task.contextIndex = group[stream];
+                if (ioMode_ == CopyIoMode::GLM51) {
+                    task.copies.reserve(kGlm51IoCount);
+                    auto* srcBase = static_cast<char*>(src[taskIndex]);
+                    auto* dstBase = static_cast<char*>(dst[taskIndex]);
+                    for (size_t io = 0; io < kGlm51IoCount; ++io) {
+                        task.copies.push_back(
+                            {dstBase + kGlm51IoOffsets[io], srcBase + kGlm51IoOffsets[io],
+                             kGlm51IoSizes[io]});
+                    }
+                } else {
+                    task.copies.push_back({dst[taskIndex], src[taskIndex], src.Size()});
+                }
+
+                const size_t globalTaskIndex = tasks_.size();
+                tasks_.push_back(std::move(task));
+                contextTasks_[group[stream]].push_back(globalTaskIndex);
+                groupTasks.push_back(globalTaskIndex);
             }
             contextGroups_.push_back(std::move(group));
+            taskGroups_.push_back(std::move(groupTasks));
         }
 
+        ASSERT(!contexts_.empty());
         ASCEND_ASSERT(aclrtSetDevice(contexts_[0].deviceId));
         ASCEND_ASSERT(aclrtCreateEvent(&totalStart_));
         ASCEND_ASSERT(aclrtCreateEvent(&totalEnd_));
@@ -483,6 +529,9 @@ protected:
         ASCEND_ASSERT(aclrtDestroyEvent(totalEnd_));
         contexts_.clear();
         contextGroups_.clear();
+        contextTasks_.clear();
+        tasks_.clear();
+        taskGroups_.clear();
     }
 
     std::pair<size_t, size_t> DoCopyOnce() override
@@ -571,7 +620,7 @@ protected:
     void SubmitGroups()
     {
         if (contextGroups_.size() == 1) {
-            SubmitGroup(contextGroups_[0]);
+            SubmitGroup(0);
             return;
         }
 
@@ -581,7 +630,7 @@ protected:
             {
                 std::lock_guard<std::mutex> lock(worker->mutex);
                 ASSERT(!worker->hasTask);
-                worker->task = [this, index]() { SubmitGroup(contextGroups_[index]); };
+                worker->task = [this, index]() { SubmitGroup(index); };
                 worker->error = nullptr;
                 worker->done = false;
                 worker->hasTask = true;
@@ -600,31 +649,59 @@ protected:
         if (error != nullptr) { std::rethrow_exception(error); }
     }
 
-    void SubmitGroup(const std::vector<size_t>& group)
+    void SubmitTask(const CopyTask& task)
     {
+        auto& ctx = contexts_[task.contextIndex];
+        for (const auto& copy : task.copies) {
+            ASCEND_ASSERT(aclrtMemcpyAsync(copy.dst, copy.size, copy.src, copy.size,
+                                           ACL_MEMCPY_HOST_TO_DEVICE, ctx.stream));
+        }
+    }
+
+    void SubmitGroup(size_t groupIndex)
+    {
+        const auto& group = contextGroups_[groupIndex];
         if (group.empty()) { return; }
 
         ASCEND_ASSERT(aclrtSetDevice(contexts_[group[0]].deviceId));
         for (const auto contextIndex : group) {
             auto& ctx = contexts_[contextIndex];
-            if (contextIndex != 0) {
-                ASCEND_ASSERT(aclrtStreamWaitEvent(ctx.stream, totalStart_));
+            if (contextIndex != 0) { ASCEND_ASSERT(aclrtStreamWaitEvent(ctx.stream, totalStart_)); }
+        }
+
+        if (submitMode_ == CopySubmitMode::ROUND_ROBIN) {
+            for (const auto taskIndex : taskGroups_[groupIndex]) { SubmitTask(tasks_[taskIndex]); }
+        } else {
+            for (const auto contextIndex : group) {
+                for (const auto taskIndex : contextTasks_[contextIndex]) {
+                    SubmitTask(tasks_[taskIndex]);
+                }
             }
-            for (size_t i = 0; i < ctx.src.size(); i++) {
-                ASCEND_ASSERT(aclrtMemcpyAsync(ctx.dst[i], ctx.size, ctx.src[i], ctx.size,
-                                               ACL_MEMCPY_HOST_TO_DEVICE, ctx.stream));
-            }
+        }
+
+        for (const auto contextIndex : group) {
+            auto& ctx = contexts_[contextIndex];
             ASCEND_ASSERT(aclrtRecordEvent(ctx.endEvent, ctx.stream));
         }
     }
 
 public:
-    H2DCEMultiStreamCopyInstance(size_t iterations, bool affinitySrc, size_t streamCount)
-        : CopyInstance(iterations, affinitySrc), streamCount_(streamCount)
+    H2DCEMultiStreamCopyInstance(
+        size_t iterations, bool affinitySrc, size_t streamCount,
+        CopyIoMode ioMode = CopyIoMode::UNIFORM,
+        CopySubmitMode submitMode = CopySubmitMode::STREAM_MAJOR)
+        : CopyInstance(iterations, affinitySrc),
+          streamCount_(streamCount),
+          ioMode_(ioMode),
+          submitMode_(submitMode)
     {
     }
 
-    std::string Name() const override { return "CE"; }
+    std::string Name() const override
+    {
+        return "CE-MS" + std::to_string(streamCount_) + CopySubmitModeSuffix(submitMode_) +
+               (ioMode_ == CopyIoMode::GLM51 ? "-GLM51" : "");
+    }
 };
 
 #endif  // COPY_INSTANCE_ASCEND_H

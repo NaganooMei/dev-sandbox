@@ -30,7 +30,14 @@
 struct ArgsParser {
     std::unordered_set<std::string> names;
     CopyCase::Context ctx{
-        .size = 512ull * 1024ull * 1024ull, .num = 8, .frags = 0, .iter = 128, .nDevice = 8};
+        .size = 512ull * 1024ull * 1024ull,
+        .num = 8,
+        .frags = 0,
+        .streams = 0,
+        .ioMode = CopyIoMode::UNIFORM,
+        .submitMode = CopySubmitMode::STREAM_MAJOR,
+        .iter = 128,
+        .nDevice = 8};
 
     static void Help(std::string_view proc)
     {
@@ -38,11 +45,18 @@ struct ArgsParser {
         fmt::println("Options:");
         fmt::println("  -t <name>        Case name");
         fmt::println("  -s <size>        Data size in KB/MB (e.g., 4K, 16K, 1M, default: 512MB)");
-        fmt::println("  -n <count>       Data number (default: 8). For ffts direct H2D with");
-        fmt::println("                   --frags/-frags, this is IO/task count.");
+        fmt::println("  -n <count>       Data number (default: 8). In glm5.1 mode this is");
+        fmt::println("                   the block count.");
         fmt::println("  -f/--frags/-frags <n>");
         fmt::println("                   Fragments per IO/task for ffts direct H2D");
         fmt::println("                   (default: 0, legacy single task)");
+        fmt::println("  -S/--streams/--stream-count <n>");
+        fmt::println("                   Streams per device (default: CE=48, FFTS=1)");
+        fmt::println("  --io-mode <mode> IO layout: uniform or glm5.1 (default: uniform)");
+        fmt::println("                   glm5.1 fixes each block to 128K/16K/32K and");
+        fmt::println("                   requires -f 3; -s is ignored in this mode");
+        fmt::println("  --submit-mode <mode>");
+        fmt::println("                   stream-major or round-robin (default: stream-major)");
         fmt::println("  -i <count>       Iteration count (default: 128)");
         fmt::println("  -d <count>       Number of devices (default: 8)");
     }
@@ -75,6 +89,26 @@ struct ArgsParser {
                 std::exit(EXIT_FAILURE);
         }
     }
+    static CopyIoMode ParseIoMode(std::string_view mode)
+    {
+        if (mode == "uniform") { return CopyIoMode::UNIFORM; }
+        if (mode == "glm" || mode == "glm5.1" || mode == "glm51") {
+            return CopyIoMode::GLM51;
+        }
+        fmt::println("Invalid IO mode. Use uniform or glm5.1.");
+        std::exit(EXIT_FAILURE);
+    }
+    static CopySubmitMode ParseSubmitMode(std::string_view mode)
+    {
+        if (mode == "stream" || mode == "stream-major") {
+            return CopySubmitMode::STREAM_MAJOR;
+        }
+        if (mode == "rr" || mode == "round-robin") {
+            return CopySubmitMode::ROUND_ROBIN;
+        }
+        fmt::println("Invalid submit mode. Use stream-major or round-robin.");
+        std::exit(EXIT_FAILURE);
+    }
     ArgsParser(int argc, char const* argv[])
     {
         for (int i = 1; i < argc; ++i) {
@@ -87,6 +121,17 @@ struct ArgsParser {
                 ctx.num = ParseUnsigned(argv[++i], "Invalid data count.");
             } else if ((arg == "-f" || arg == "--frags" || arg == "-frags") && i + 1 < argc) {
                 ctx.frags = ParseUnsigned(argv[++i], "Invalid fragment count.");
+            } else if ((arg == "-S" || arg == "--streams" || arg == "--stream-count") &&
+                       i + 1 < argc) {
+                ctx.streams = ParseUnsigned(argv[++i], "Invalid stream count.");
+                if (ctx.streams == 0) {
+                    fmt::println("Invalid stream count. Use a positive integer.");
+                    std::exit(EXIT_FAILURE);
+                }
+            } else if (arg == "--io-mode" && i + 1 < argc) {
+                ctx.ioMode = ParseIoMode(argv[++i]);
+            } else if (arg == "--submit-mode" && i + 1 < argc) {
+                ctx.submitMode = ParseSubmitMode(argv[++i]);
             } else if (arg == "-i" && i + 1 < argc) {
                 ctx.iter = ParseUnsigned(argv[++i], "Invalid iteration count.");
             } else if (arg == "-d" && i + 1 < argc) {
@@ -95,6 +140,10 @@ struct ArgsParser {
                 Help(argv[0]);
                 std::exit(EXIT_FAILURE);
             }
+        }
+        if (ctx.ioMode == CopyIoMode::GLM51 && ctx.frags != kGlm51IoCount) {
+            fmt::println("glm5.1 IO mode requires -f {}.", kGlm51IoCount);
+            std::exit(EXIT_FAILURE);
         }
     }
 };

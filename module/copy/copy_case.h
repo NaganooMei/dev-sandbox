@@ -28,6 +28,7 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
+#include "copy_options.h"
 
 class CopyCase {
     std::string key_;
@@ -38,6 +39,9 @@ public:
         size_t size;
         size_t num;
         size_t frags;
+        size_t streams;
+        CopyIoMode ioMode;
+        CopySubmitMode submitMode;
         size_t iter;
         size_t nDevice;
     };

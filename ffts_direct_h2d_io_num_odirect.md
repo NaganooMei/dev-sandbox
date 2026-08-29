@@ -16,12 +16,13 @@
 
 ## `-n` 与 `frags`
 
-copy benchmark 原来已经有全局 `-n` 参数。为了兼容旧逻辑，direct H2D 现在分成两种模式：
+copy benchmark 原来已经有全局 `-n` 参数。为了兼容旧逻辑，direct H2D 现在分成三种模式：
 
 | 模式 | 命令形式 | 含义 |
 | --- | --- | --- |
 | 兼容模式 | 不传 `--frags`、`-frags` 或 `-f` | `-n` 仍表示总 fragment 数，direct H2D 会把所有 fragment 合成一个 FFTS task 下发。这和旧行为一致。 |
 | 多 task 模式 | 传 `--frags <count>`、`-frags <count>` 或 `-f <count>` | `-n` 表示 IO/task 数量，`frags` 表示每个 IO/task 内包含多少个 fragment。程序会分配 `-n * frags` 个 fragment，并在每次迭代里下发 `-n` 个 FFTS task。 |
+| GLM5.1 模式 | `--io-mode glm5.1 -f 3` | `-n` 表示 block 数。每个 block 是一个 FFTS task，包含 128K、16K、32K 三个 context，总计 176K。 |
 
 示例：
 
@@ -37,6 +38,20 @@ FFTS_MAX_READY_LANES=8 \
 # 新行为：100 个 IO/task，每个 task 里 128 个 fragment，每张卡共 12800 个 fragment。
 FFTS_MAX_READY_LANES=8 \
 ./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 32K -n 100 -frags 128 -i 10 -d 8
+```
+
+## 多 stream 与提交顺序
+
+`-S`、`--streams` 或 `--stream-count` 控制每张卡创建的 FFTS stream 数。默认值为 1；实际创建数量不会超过 task/block 数。
+
+`--submit-mode stream-major` 先把分配给 stream 0 的 task 全部下发，再下发 stream 1。`--submit-mode round-robin` 按 task/block 顺序轮询 stream。GLM5.1 的三条 IO 属于一个不可拆分的 block：轮询发生在 block 之间，block 内的 128K、16K、32K 始终进入同一个 stream。
+
+```bash
+COPY_FFTS_VALIDATE=1 FFTS_MAX_READY_LANES=3 \
+./build/module/copy/copy \
+  -t one_share_host_to_all_device_ffts_direct_h2d \
+  --io-mode glm5.1 -f 3 -n 1024 -S 16 \
+  --submit-mode round-robin -i 10 -d 16
 ```
 
 默认 benchmark 配置建议固定 lanes 为 8：
@@ -77,6 +92,8 @@ mapped host source pointer -> device destination pointer -> fragment size
 单卡 Count = -n * frags
 聚合 Count = -n * frags * device_count
 ```
+
+GLM5.1 例外：`Size(KB)` 固定为 176，单卡 `Count = -n`，聚合 `Count = -n * device_count`，因此总字节数仍然是实际的 block 总字节数。
 
 ## 多进程 submit 与 CPU 亲和性
 
