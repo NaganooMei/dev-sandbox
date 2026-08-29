@@ -82,11 +82,12 @@ DEFINE_COPY_CASE_NO_RUNTIME(OneShareHost2AllDeviceCECase, "one_share_host_to_all
     CopyResult result;
     SharedHostRegion srcRegion{"one_share_host_to_all_device_ce", 0, ctx.size, ctx.num};
     result.Push(ascend_copy::RunForkedCopyBatch(
-        ctx, srcRegion.Name(), "acl::device::all", "CE-FORK", [&](size_t device) {
+        ctx, srcRegion.Name(), "acl::device::all", "CE-FORK",
+        [&](size_t device, CopyIterationObserver* observer) {
             SharedHostCopyBuffer srcBuffer{srcRegion.ShmName(), device, ctx.size, ctx.num};
             DeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
             H2DCECopyInstance instance{ctx.iter, false};
-            return instance.DoCopy(&srcBuffer, &dstBuffer);
+            return instance.DoCopy(&srcBuffer, &dstBuffer, observer);
         }));
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
@@ -100,11 +101,11 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     SharedHostRegion srcRegion{"one_share_host_to_all_device_ce_per_device", 0, ctx.size,
                                ctx.num};
     auto childResults = ascend_copy::RunForkedCopyBatchPerDevice(
-        ctx, [&](size_t device) {
+        ctx, [&](size_t device, CopyIterationObserver* observer) {
             SharedHostCopyBuffer srcBuffer{srcRegion.ShmName(), device, ctx.size, ctx.num};
             DeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
             H2DCECopyInstance instance{ctx.iter, false};
-            return instance.DoCopy(&srcBuffer, &dstBuffer);
+            return instance.DoCopy(&srcBuffer, &dstBuffer, observer);
         });
     for (auto& childResult : childResults) {
         childResult.src = srcRegion.Name();
@@ -162,12 +163,13 @@ DEFINE_COPY_CASE_NO_RUNTIME(OneHugeShm2AllDeviceCECase, "one_huge_shm_to_all_dev
     CopyResult result;
     HugeSharedRegion srcRegion{"one_huge_shm_to_all_device_ce", 0, ctx.size, ctx.num};
     result.Push(ascend_copy::RunForkedCopyBatch(
-        ctx, srcRegion.Name(), "acl::device::all", "CE-FORK", [&](size_t device) {
+        ctx, srcRegion.Name(), "acl::device::all", "CE-FORK",
+        [&](size_t device, CopyIterationObserver* observer) {
             HugeSharedCopyBuffer srcBuffer{srcRegion.Fd(), srcRegion.MappedBytes(), device,
                                            ctx.size, ctx.num};
             DeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
             H2DCECopyInstance instance{ctx.iter, false};
-            return instance.DoCopy(&srcBuffer, &dstBuffer);
+            return instance.DoCopy(&srcBuffer, &dstBuffer, observer);
         }));
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
@@ -181,12 +183,12 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     HugeSharedRegion srcRegion{"one_huge_shm_to_all_device_ce_per_device", 0, ctx.size,
                                ctx.num};
     auto childResults = ascend_copy::RunForkedCopyBatchPerDevice(
-        ctx, [&](size_t device) {
+        ctx, [&](size_t device, CopyIterationObserver* observer) {
             HugeSharedCopyBuffer srcBuffer{srcRegion.Fd(), srcRegion.MappedBytes(), device,
                                            ctx.size, ctx.num};
             DeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
             H2DCECopyInstance instance{ctx.iter, false};
-            return instance.DoCopy(&srcBuffer, &dstBuffer);
+            return instance.DoCopy(&srcBuffer, &dstBuffer, observer);
         });
     for (auto& childResult : childResults) {
         childResult.src = srcRegion.Name();
@@ -200,11 +202,12 @@ DEFINE_COPY_CASE_NO_RUNTIME(AllHost2AllDeviceCECase, "all_host_to_all_device_ce"
 {
     CopyResult result;
     result.Push(ascend_copy::RunForkedCopyBatch(
-        ctx, "acl::host::all", "acl::device::all", "CE-FORK", [&](size_t device) {
+        ctx, "acl::host::all", "acl::device::all", "CE-FORK",
+        [&](size_t device, CopyIterationObserver* observer) {
             HostCopyBuffer srcBuffer{device, ctx.size, ctx.num};
             DeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
             H2DCECopyInstance instance{ctx.iter, false};
-            return instance.DoCopy(&srcBuffer, &dstBuffer);
+            return instance.DoCopy(&srcBuffer, &dstBuffer, observer);
         }));
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
@@ -305,12 +308,12 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     result.Push(ascend_copy::RunForkedCopyBatch(
         ctx, ctx.ioMode == CopyIoMode::GLM51 ? "acl::shm::glm5.1" : srcRegion.Name(),
         "acl::device::all", CEMultiStreamMethodName(ctx, true),
-        [&](size_t device) {
+        [&](size_t device, CopyIterationObserver* observer) {
             SharedHostCopyBuffer srcBuffer{srcRegion.ShmName(), device, bufferSize, ctx.num};
             DeviceCopyBuffer dstBuffer{device, bufferSize, ctx.num};
             H2DCEMultiStreamCopyInstance instance{ctx.iter, false, streamCount, ctx.ioMode,
                                                   ctx.submitMode};
-            return instance.DoCopy(&srcBuffer, &dstBuffer);
+            return instance.DoCopy(&srcBuffer, &dstBuffer, observer);
         }));
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
@@ -343,12 +346,12 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     CopyResult result;
     result.Push(ascend_copy::RunForkedCopyBatch(
         ctx, "acl::host::all", "acl::device::all", CEMultiStreamMethodName(ctx, true),
-        [&](size_t device) {
+        [&](size_t device, CopyIterationObserver* observer) {
             HostCopyBuffer srcBuffer{device, bufferSize, ctx.num};
             DeviceCopyBuffer dstBuffer{device, bufferSize, ctx.num};
             H2DCEMultiStreamCopyInstance instance{ctx.iter, false, streamCount, ctx.ioMode,
                                                   ctx.submitMode};
-            return instance.DoCopy(&srcBuffer, &dstBuffer);
+            return instance.DoCopy(&srcBuffer, &dstBuffer, observer);
         }));
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
@@ -364,12 +367,12 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     CopyResult result;
     result.Push(ascend_copy::RunForkedCopyBatch(
         ctx, "acl::anon::all", "acl::device::all", CEMultiStreamMethodName(ctx, true),
-        [&](size_t device) {
+        [&](size_t device, CopyIterationObserver* observer) {
             AnonymousCopyBuffer srcBuffer{device, bufferSize, ctx.num};
             DeviceCopyBuffer dstBuffer{device, bufferSize, ctx.num};
             H2DCEMultiStreamCopyInstance instance{ctx.iter, false, streamCount, ctx.ioMode,
                                                   ctx.submitMode};
-            return instance.DoCopy(&srcBuffer, &dstBuffer);
+            return instance.DoCopy(&srcBuffer, &dstBuffer, observer);
         }));
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
@@ -386,12 +389,12 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     CopyResult result;
     result.Push(ascend_copy::RunForkedCopyBatch(
         ctx, "acl::odirect_mmap::all", "acl::device::all", CEMultiStreamMethodName(ctx, true),
-        [&](size_t device) {
+        [&](size_t device, CopyIterationObserver* observer) {
             ODirectHostCopyBuffer srcBuffer{device, bufferSize, ctx.num};
             DeviceCopyBuffer dstBuffer{device, bufferSize, ctx.num};
             H2DCEMultiStreamCopyInstance instance{ctx.iter, false, streamCount, ctx.ioMode,
                                                   ctx.submitMode};
-            return instance.DoCopy(&srcBuffer, &dstBuffer);
+            return instance.DoCopy(&srcBuffer, &dstBuffer, observer);
         }));
     result.Show("[[ " + Key() + " ]] " + Brief());
 }

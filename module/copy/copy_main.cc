@@ -36,6 +36,7 @@ struct ArgsParser {
         .streams = 0,
         .ioMode = CopyIoMode::UNIFORM,
         .submitMode = CopySubmitMode::STREAM_MAJOR,
+        .processSyncMode = CopyProcessSyncMode::BARRIER,
         .iter = 128,
         .nDevice = 8};
 
@@ -57,6 +58,9 @@ struct ArgsParser {
         fmt::println("                   requires -f 3; -s is ignored in this mode");
         fmt::println("  --submit-mode <mode>");
         fmt::println("                   stream-major or round-robin (default: stream-major)");
+        fmt::println("  --process-sync <mode>");
+        fmt::println("                   barrier or none for forked multi-device cases");
+        fmt::println("                   (default: barrier)");
         fmt::println("  -i <count>       Iteration count (default: 128)");
         fmt::println("  -d <count>       Number of devices (default: 8)");
     }
@@ -109,6 +113,13 @@ struct ArgsParser {
         fmt::println("Invalid submit mode. Use stream-major or round-robin.");
         std::exit(EXIT_FAILURE);
     }
+    static CopyProcessSyncMode ParseProcessSyncMode(std::string_view mode)
+    {
+        if (mode == "barrier") { return CopyProcessSyncMode::BARRIER; }
+        if (mode == "none") { return CopyProcessSyncMode::NONE; }
+        fmt::println("Invalid process sync mode. Use barrier or none.");
+        std::exit(EXIT_FAILURE);
+    }
     ArgsParser(int argc, char const* argv[])
     {
         for (int i = 1; i < argc; ++i) {
@@ -132,6 +143,8 @@ struct ArgsParser {
                 ctx.ioMode = ParseIoMode(argv[++i]);
             } else if (arg == "--submit-mode" && i + 1 < argc) {
                 ctx.submitMode = ParseSubmitMode(argv[++i]);
+            } else if (arg == "--process-sync" && i + 1 < argc) {
+                ctx.processSyncMode = ParseProcessSyncMode(argv[++i]);
             } else if (arg == "-i" && i + 1 < argc) {
                 ctx.iter = ParseUnsigned(argv[++i], "Invalid iteration count.");
             } else if (arg == "-d" && i + 1 < argc) {

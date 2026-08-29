@@ -32,42 +32,50 @@
 
 class CopyResult {
 public:
+    struct Statistics {
+        size_t min = 0;
+        size_t max = 0;
+        size_t avg = 0;
+        size_t p50 = 0;
+        size_t p90 = 0;
+
+        void Parse(const std::vector<size_t>& costs)
+        {
+            if (costs.empty()) return;
+            size_t sum = 0;
+            min = max = costs[0];
+            for (auto cost : costs) {
+                if (cost < min) min = cost;
+                if (cost > max) max = cost;
+                sum += cost;
+            }
+            avg = sum / costs.size();
+            auto sorted = costs;
+            std::sort(sorted.begin(), sorted.end());
+            p50 = sorted[sorted.size() / 2];
+            p90 = sorted[sorted.size() * 9 / 10];
+        }
+        std::string ToString() const
+        {
+            return fmt::format("{} / {} / {} / {} / {}", min, max, avg, p50, p90);
+        }
+    };
+
     struct Result {
         std::string src;
         std::string dst;
         std::string method;
         size_t size;
         size_t count;
-        struct {
-            size_t min = 0;
-            size_t max = 0;
-            size_t avg = 0;
-            size_t p50 = 0;
-            size_t p90 = 0;
-
-            void Parse(const std::vector<size_t>& costs)
-            {
-                if (costs.empty()) return;
-                size_t sum = 0;
-                min = max = costs[0];
-                for (auto cost : costs) {
-                    if (cost < min) min = cost;
-                    if (cost > max) max = cost;
-                    sum += cost;
-                }
-                avg = sum / costs.size();
-                auto sorted = costs;
-                std::sort(sorted.begin(), sorted.end());
-                p50 = sorted[sorted.size() / 2];
-                p90 = sorted[sorted.size() * 9 / 10];
-            }
-            std::string ToString() const
-            {
-                return fmt::format("{} / {} / {} / {} / {}", min, max, avg, p50, p90);
-            }
-        } submit, copy;
+        Statistics submit;
+        Statistics copy;
+        Statistics processStartSkew;
+        Statistics groupWall;
         std::vector<size_t> submitCosts;
         std::vector<size_t> copyCosts;
+        std::vector<size_t> processStartSkewCosts;
+        std::vector<size_t> groupWallCosts;
+        std::string processSyncMode;
         Result(std::string src, std::string dst, std::string method, size_t size, size_t count,
                std::vector<size_t>&& submitCosts, std::vector<size_t>&& copyCosts)
             : src(std::move(src)),
@@ -80,6 +88,16 @@ public:
         {
             submit.Parse(this->submitCosts);
             copy.Parse(this->copyCosts);
+        }
+
+        void SetProcessTiming(std::string mode, std::vector<size_t>&& startSkewCosts,
+                              std::vector<size_t>&& wallCosts)
+        {
+            processSyncMode = std::move(mode);
+            processStartSkewCosts = std::move(startSkewCosts);
+            groupWallCosts = std::move(wallCosts);
+            processStartSkew.Parse(processStartSkewCosts);
+            groupWall.Parse(groupWallCosts);
         }
     };
     void Push(Result&& result) { results_.push_back(std::move(result)); }
@@ -96,6 +114,15 @@ public:
             fmt::println("{}{:<18}{:<18}{:<10}{:<10.0f}{:<8}{:<40}{:<44}{:.3f}", indentation,
                          result.src, result.dst, result.method, result.size / 1024.f, result.count,
                          result.submit.ToString(), result.copy.ToString(), bw);
+            if (!result.groupWallCosts.empty()) {
+                const auto wallBw = result.size * result.count * 1e6f / result.groupWall.avg /
+                                    1024.f / 1024.f / 1024.f;
+                fmt::println(
+                    "{}ProcessSync={} StartSkew(us)-(Min/Max/Avg/P50/P90)={} "
+                    "GroupWall(us)-(Min/Max/Avg/P50/P90)={} WallBW(GB/s)={:.3f}",
+                    indentation, result.processSyncMode, result.processStartSkew.ToString(),
+                    result.groupWall.ToString(), wallBw);
+            }
         }
     }
 

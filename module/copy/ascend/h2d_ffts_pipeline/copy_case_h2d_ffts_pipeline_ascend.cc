@@ -189,13 +189,13 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     InitializeHostPatternedBuffer(srcRegion);
     result.Push(ascend_copy::RunForkedCopyBatch(
         ctx, srcRegion.Name(), "acl::device_frag::all", "h2d_ffts_pipeline-FORK",
-        [&](size_t device) {
+        [&](size_t device, CopyIterationObserver* observer) {
             SharedHostCopyBuffer srcBuffer{srcRegion.ShmName(), device, ctx.size, ctx.num};
             FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
             ResetBuffer(dstBuffer);
 
             H2DFFTSPipelineCopyInstance instance{ctx.iter, false, objectFrags};
-            auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer);
+            auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer, observer);
             ValidateDeviceBufferIfEnabled(dstBuffer, validationEnabled);
             return childResult;
         }));
@@ -218,14 +218,14 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     InitializeHostPatternedBuffer(srcRegion);
     result.Push(ascend_copy::RunForkedCopyBatch(
         ctx, srcRegion.Name(), "acl::device_frag::all", "h2d_ffts_pipeline-FORK",
-        [&](size_t device) {
+        [&](size_t device, CopyIterationObserver* observer) {
             HugeSharedCopyBuffer srcBuffer{srcRegion.Fd(), srcRegion.MappedBytes(), device,
                                            ctx.size, ctx.num};
             FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
             ResetBuffer(dstBuffer);
 
             H2DFFTSPipelineCopyInstance instance{ctx.iter, false, objectFrags};
-            auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer);
+            auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer, observer);
             ValidateDeviceBufferIfEnabled(dstBuffer, validationEnabled);
             return childResult;
         }));
@@ -273,14 +273,14 @@ DEFINE_COPY_CASE_NO_RUNTIME(
 
     result.Push(ascend_copy::RunForkedCopyBatch(
         ctx, "acl::host::all", "acl::device_frag::all", "h2d_ffts_pipeline-FORK",
-        [&](size_t device) {
+        [&](size_t device, CopyIterationObserver* observer) {
             HostCopyBuffer srcBuffer{device, ctx.size, ctx.num};
             FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
             InitializeHostPatternedBuffer(srcBuffer);
             ResetBuffer(dstBuffer);
 
             H2DFFTSPipelineCopyInstance instance{ctx.iter, false, objectFrags};
-            auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer);
+            auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer, observer);
             ValidateDeviceBufferIfEnabled(dstBuffer, validationEnabled);
             return childResult;
         }));
@@ -302,14 +302,14 @@ DEFINE_COPY_CASE_NO_RUNTIME(
 
     result.Push(ascend_copy::RunForkedCopyBatch(
         ctx, "acl::odirect_mmap::all", "acl::device_frag::all", "h2d_ffts_pipeline-FORK",
-        [&](size_t device) {
+        [&](size_t device, CopyIterationObserver* observer) {
             ODirectHostCopyBuffer srcBuffer{device, ctx.size, ctx.num};
             FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
             InitializeHostPatternedBuffer(srcBuffer);
             ResetBuffer(dstBuffer);
 
             H2DFFTSPipelineCopyInstance instance{ctx.iter, false, objectFrags};
-            auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer);
+            auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer, observer);
             ValidateDeviceBufferIfEnabled(dstBuffer, validationEnabled);
             return childResult;
         }));

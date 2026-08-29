@@ -30,6 +30,13 @@
 #include "copy_buffer.h"
 #include "copy_result.h"
 
+class CopyIterationObserver {
+public:
+    virtual ~CopyIterationObserver() = default;
+    virtual void BeforeIteration(size_t iteration) = 0;
+    virtual void AfterIteration(size_t iteration) = 0;
+};
+
 class CopyInstance {
 protected:
     size_t iterations_;
@@ -58,7 +65,8 @@ public:
     virtual std::string Name() const = 0;
 
     CopyResult::Result DoCopyBatch(const std::vector<const CopyBuffer*>& srcBuffers,
-                                   const std::vector<const CopyBuffer*>& dstBuffers)
+                                   const std::vector<const CopyBuffer*>& dstBuffers,
+                                   CopyIterationObserver* observer = nullptr)
     {
         Prepare(srcBuffers, dstBuffers);
 
@@ -68,7 +76,9 @@ public:
         std::vector<size_t> submitCostArray;
         std::vector<size_t> copyCostArray;
         for (size_t i = 0; i < iterations_; i++) {
+            if (observer != nullptr) { observer->BeforeIteration(i); }
             auto [copyCost, submitCost] = DoCopyOnce();
+            if (observer != nullptr) { observer->AfterIteration(i); }
             copyCostArray.push_back(copyCost);
             submitCostArray.push_back(submitCost);
         }
@@ -84,9 +94,10 @@ public:
                 std::move(copyCostArray)};
     }
 
-    CopyResult::Result DoCopy(const CopyBuffer* srcBuffer, const CopyBuffer* dstBuffer)
+    CopyResult::Result DoCopy(const CopyBuffer* srcBuffer, const CopyBuffer* dstBuffer,
+                              CopyIterationObserver* observer = nullptr)
     {
-        return DoCopyBatch({srcBuffer}, {dstBuffer});
+        return DoCopyBatch({srcBuffer}, {dstBuffer}, observer);
     }
 };
 

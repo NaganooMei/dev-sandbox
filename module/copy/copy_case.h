@@ -42,6 +42,7 @@ public:
         size_t streams;
         CopyIoMode ioMode;
         CopySubmitMode submitMode;
+        CopyProcessSyncMode processSyncMode;
         size_t iter;
         size_t nDevice;
     };

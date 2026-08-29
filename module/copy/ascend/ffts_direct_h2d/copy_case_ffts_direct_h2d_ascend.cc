@@ -135,7 +135,7 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     const bool validationEnabled = FftsDirectValidationEnabled();
     result.Push(ascend_copy::RunForkedCopyBatch(
         ctx, "acl::host_mapped::all", "acl::device::all", FftsDirectMethodName(ctx),
-        [&](size_t device) {
+        [&](size_t device, CopyIterationObserver* observer) {
             const auto bufferCount = FftsDirectBufferCount(ctx);
             const auto bufferSize = CopyIoBufferSize(ctx.ioMode, ctx.size);
             FftsMappedHostCopyBuffer srcBuffer{device, bufferSize, bufferCount};
@@ -146,7 +146,7 @@ DEFINE_COPY_CASE_NO_RUNTIME(
             FftsDirectH2DCopyInstance instance{ctx.iter, false, ctx.frags,
                                                FftsDirectStreamCount(ctx), ctx.ioMode,
                                                ctx.submitMode};
-            auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer);
+            auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer, observer);
             ValidateFftsDirectDeviceBufferIfEnabled(dstBuffer, validationEnabled);
             return childResult;
         }));
@@ -165,7 +165,7 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     const bool validationEnabled = FftsDirectValidationEnabled();
     result.Push(ascend_copy::RunForkedCopyBatch(
         ctx, "acl::odirect_mmap::all", "acl::device::all", FftsDirectMethodName(ctx),
-        [&](size_t device) {
+        [&](size_t device, CopyIterationObserver* observer) {
             const auto bufferCount = FftsDirectBufferCount(ctx);
             const auto bufferSize = CopyIoBufferSize(ctx.ioMode, ctx.size);
             FftsODirectMappedHostCopyBuffer srcBuffer{device, bufferSize, bufferCount};
@@ -176,7 +176,7 @@ DEFINE_COPY_CASE_NO_RUNTIME(
             FftsDirectH2DCopyInstance instance{ctx.iter, false, ctx.frags,
                                                FftsDirectStreamCount(ctx), ctx.ioMode,
                                                ctx.submitMode};
-            auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer);
+            auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer, observer);
             ValidateFftsDirectDeviceBufferIfEnabled(dstBuffer, validationEnabled);
             return childResult;
         }));
@@ -198,7 +198,8 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     InitializeFftsDirectHostPatternedBuffer(srcRegion);
     result.Push(ascend_copy::RunForkedCopyBatch(
         ctx, ctx.ioMode == CopyIoMode::GLM51 ? "acl::shm::glm5.1" : srcRegion.Name(),
-        "acl::device::all", FftsDirectMethodName(ctx), [&](size_t device) {
+        "acl::device::all", FftsDirectMethodName(ctx),
+        [&](size_t device, CopyIterationObserver* observer) {
             FftsMappedSharedHostCopyBuffer srcBuffer{srcRegion.ShmName(),
                                                     srcRegion.MappedBytes(), device, bufferSize,
                                                     bufferCount};
@@ -208,7 +209,7 @@ DEFINE_COPY_CASE_NO_RUNTIME(
             FftsDirectH2DCopyInstance instance{ctx.iter, false, ctx.frags,
                                                FftsDirectStreamCount(ctx), ctx.ioMode,
                                                ctx.submitMode};
-            auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer);
+            auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer, observer);
             ValidateFftsDirectDeviceBufferIfEnabled(dstBuffer, validationEnabled);
             return childResult;
         }));

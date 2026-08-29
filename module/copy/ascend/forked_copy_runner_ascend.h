@@ -32,19 +32,262 @@
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <limits>
+#include <new>
+#include <pthread.h>
+#include <stdexcept>
 #include <string>
+#include <sys/mman.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #include <utility>
 #include <vector>
 #include "copy_case.h"
+#include "copy_instance.h"
 #include "copy_result.h"
 #include "copy_runtime.h"
 #include "error_handle.h"
 
 namespace ascend_copy {
 
-using ForkedChildCopyFn = std::function<CopyResult::Result(size_t device)>;
+using ForkedChildCopyFn =
+    std::function<CopyResult::Result(size_t device, CopyIterationObserver* observer)>;
+
+constexpr std::uint64_t kNanosecondsPerSecond = 1000000000ull;
+constexpr std::uint64_t kProcessBarrierReleaseLeadNs = 1000000ull;
+constexpr time_t kProcessBarrierTimeoutSeconds = 60;
+
+inline std::uint64_t MonotonicNowNs()
+{
+    timespec now{};
+    ASSERT(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
+    return static_cast<std::uint64_t>(now.tv_sec) * kNanosecondsPerSecond +
+           static_cast<std::uint64_t>(now.tv_nsec);
+}
+
+inline size_t NanosecondsToMicroseconds(std::uint64_t nanoseconds)
+{
+    return static_cast<size_t>((nanoseconds + 999) / 1000);
+}
+
+struct alignas(64) ForkProcessSyncShared {
+    pthread_mutex_t mutex;
+    pthread_cond_t condition;
+    size_t participants = 0;
+    size_t iterations = 0;
+    size_t arrived = 0;
+    size_t generation = 0;
+    bool aborted = false;
+    std::uint64_t releaseTimeNs = 0;
+};
+
+struct ForkedProcessTiming {
+    std::vector<size_t> startSkewCosts;
+    std::vector<size_t> groupWallCosts;
+};
+
+class ForkProcessSync {
+    void* mapping_ = MAP_FAILED;
+    size_t mappingSize_ = 0;
+    ForkProcessSyncShared* shared_ = nullptr;
+    CopyProcessSyncMode mode_ = CopyProcessSyncMode::NONE;
+
+    size_t TimestampIndex(size_t device, size_t iteration) const
+    {
+        ASSERT(device < shared_->participants);
+        ASSERT(iteration < shared_->iterations);
+        return device * shared_->iterations + iteration;
+    }
+
+    std::uint64_t* StartTimes() const
+    {
+        return reinterpret_cast<std::uint64_t*>(shared_ + 1);
+    }
+
+    std::uint64_t* EndTimes() const
+    {
+        return StartTimes() + shared_->participants * shared_->iterations;
+    }
+
+    void Lock()
+    {
+        const auto rc = pthread_mutex_lock(&shared_->mutex);
+#ifdef __linux__
+        if (rc == EOWNERDEAD) {
+            shared_->aborted = true;
+            ASSERT(pthread_mutex_consistent(&shared_->mutex) == 0);
+            return;
+        }
+#endif
+        if (rc != 0) { throw std::runtime_error("failed to lock fork process barrier"); }
+    }
+
+    void Unlock() noexcept { pthread_mutex_unlock(&shared_->mutex); }
+
+    [[noreturn]] void FailBarrier(size_t device, size_t iteration, const char* reason)
+    {
+        shared_->aborted = true;
+        pthread_cond_broadcast(&shared_->condition);
+        Unlock();
+        throw std::runtime_error("fork process barrier " + std::string(reason) +
+                                 " on device " + std::to_string(device) + " iteration " +
+                                 std::to_string(iteration));
+    }
+
+    std::uint64_t WaitForRelease(size_t device, size_t iteration)
+    {
+        Lock();
+        if (shared_->aborted) { FailBarrier(device, iteration, "was aborted"); }
+
+        const auto generation = shared_->generation;
+        ++shared_->arrived;
+        if (shared_->arrived == shared_->participants) {
+            shared_->arrived = 0;
+            shared_->releaseTimeNs = MonotonicNowNs() + kProcessBarrierReleaseLeadNs;
+            ++shared_->generation;
+            if (pthread_cond_broadcast(&shared_->condition) != 0) {
+                FailBarrier(device, iteration, "broadcast failed");
+            }
+        } else {
+            timespec deadline{};
+            ASSERT(clock_gettime(CLOCK_MONOTONIC, &deadline) == 0);
+            deadline.tv_sec += kProcessBarrierTimeoutSeconds;
+            while (generation == shared_->generation && !shared_->aborted) {
+                const auto rc =
+                    pthread_cond_timedwait(&shared_->condition, &shared_->mutex, &deadline);
+                if (rc == ETIMEDOUT) { FailBarrier(device, iteration, "timed out"); }
+                if (rc != 0) { FailBarrier(device, iteration, "wait failed"); }
+            }
+            if (shared_->aborted) { FailBarrier(device, iteration, "was aborted"); }
+        }
+
+        const auto releaseTimeNs = shared_->releaseTimeNs;
+        Unlock();
+        return releaseTimeNs;
+    }
+
+public:
+    ForkProcessSync(size_t participants, size_t iterations, CopyProcessSyncMode mode)
+        : mode_(mode)
+    {
+        ASSERT(participants > 0);
+        const auto timestampCount = participants * iterations;
+        mappingSize_ = sizeof(ForkProcessSyncShared) +
+                       timestampCount * sizeof(std::uint64_t) * 2;
+        mapping_ = mmap(nullptr, mappingSize_, PROT_READ | PROT_WRITE,
+                        MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        ASSERT(mapping_ != MAP_FAILED);
+        std::memset(mapping_, 0, mappingSize_);
+        shared_ = new (mapping_) ForkProcessSyncShared{};
+        shared_->participants = participants;
+        shared_->iterations = iterations;
+
+        pthread_mutexattr_t mutexAttr{};
+        ASSERT(pthread_mutexattr_init(&mutexAttr) == 0);
+        ASSERT(pthread_mutexattr_setpshared(&mutexAttr, PTHREAD_PROCESS_SHARED) == 0);
+#ifdef __linux__
+        ASSERT(pthread_mutexattr_setrobust(&mutexAttr, PTHREAD_MUTEX_ROBUST) == 0);
+#endif
+        ASSERT(pthread_mutex_init(&shared_->mutex, &mutexAttr) == 0);
+        ASSERT(pthread_mutexattr_destroy(&mutexAttr) == 0);
+
+        pthread_condattr_t conditionAttr{};
+        ASSERT(pthread_condattr_init(&conditionAttr) == 0);
+        ASSERT(pthread_condattr_setpshared(&conditionAttr, PTHREAD_PROCESS_SHARED) == 0);
+        ASSERT(pthread_condattr_setclock(&conditionAttr, CLOCK_MONOTONIC) == 0);
+        ASSERT(pthread_cond_init(&shared_->condition, &conditionAttr) == 0);
+        ASSERT(pthread_condattr_destroy(&conditionAttr) == 0);
+    }
+
+    ForkProcessSync(const ForkProcessSync&) = delete;
+    ForkProcessSync& operator=(const ForkProcessSync&) = delete;
+
+    ~ForkProcessSync()
+    {
+        if (shared_ != nullptr) {
+            pthread_cond_destroy(&shared_->condition);
+            pthread_mutex_destroy(&shared_->mutex);
+        }
+        if (mapping_ != MAP_FAILED) { munmap(mapping_, mappingSize_); }
+    }
+
+    CopyProcessSyncMode Mode() const { return mode_; }
+
+    void BeforeIteration(size_t device, size_t iteration)
+    {
+        if (mode_ == CopyProcessSyncMode::BARRIER) {
+            const auto releaseTimeNs = WaitForRelease(device, iteration);
+            while (MonotonicNowNs() < releaseTimeNs) {}
+        }
+        StartTimes()[TimestampIndex(device, iteration)] = MonotonicNowNs();
+    }
+
+    void AfterIteration(size_t device, size_t iteration)
+    {
+        EndTimes()[TimestampIndex(device, iteration)] = MonotonicNowNs();
+    }
+
+    void Abort() noexcept
+    {
+        if (shared_ == nullptr) { return; }
+        const auto rc = pthread_mutex_lock(&shared_->mutex);
+#ifdef __linux__
+        if (rc == EOWNERDEAD) { pthread_mutex_consistent(&shared_->mutex); }
+#endif
+        if (rc == 0 || rc == EOWNERDEAD) {
+            shared_->aborted = true;
+            pthread_cond_broadcast(&shared_->condition);
+            pthread_mutex_unlock(&shared_->mutex);
+        }
+    }
+
+    ForkedProcessTiming CollectTiming() const
+    {
+        ForkedProcessTiming timing;
+        timing.startSkewCosts.reserve(shared_->iterations);
+        timing.groupWallCosts.reserve(shared_->iterations);
+        for (size_t iteration = 0; iteration < shared_->iterations; ++iteration) {
+            std::uint64_t minStart = std::numeric_limits<std::uint64_t>::max();
+            std::uint64_t maxStart = 0;
+            std::uint64_t maxEnd = 0;
+            for (size_t device = 0; device < shared_->participants; ++device) {
+                const auto index = TimestampIndex(device, iteration);
+                const auto start = StartTimes()[index];
+                const auto end = EndTimes()[index];
+                ASSERT(start > 0);
+                ASSERT(end >= start);
+                minStart = std::min(minStart, start);
+                maxStart = std::max(maxStart, start);
+                maxEnd = std::max(maxEnd, end);
+            }
+            timing.startSkewCosts.push_back(NanosecondsToMicroseconds(maxStart - minStart));
+            timing.groupWallCosts.push_back(NanosecondsToMicroseconds(maxEnd - minStart));
+        }
+        return timing;
+    }
+};
+
+class ForkedCopyIterationObserver : public CopyIterationObserver {
+    ForkProcessSync* processSync_;
+    size_t device_;
+
+public:
+    ForkedCopyIterationObserver(ForkProcessSync* processSync, size_t device)
+        : processSync_(processSync), device_(device)
+    {
+    }
+
+    void BeforeIteration(size_t iteration) override
+    {
+        processSync_->BeforeIteration(device_, iteration);
+    }
+
+    void AfterIteration(size_t iteration) override
+    {
+        processSync_->AfterIteration(device_, iteration);
+    }
+};
 
 struct ForkedChildProcess {
     pid_t pid = -1;
@@ -168,18 +411,21 @@ inline bool ReadResult(int fd, CopyResult::Result& result)
     return true;
 }
 
-[[noreturn]] inline void RunChildCopy(size_t device, int writeFd,
-                                      const ForkedChildCopyFn& childCopy)
+[[noreturn]] inline void RunChildCopy(size_t device, int writeFd, ForkProcessSync* processSync,
+                                       const ForkedChildCopyFn& childCopy)
 {
     int status = EXIT_FAILURE;
     {
         try {
             CopyRuntime runtime;
-            auto result = childCopy(device);
+            ForkedCopyIterationObserver observer{processSync, device};
+            auto result = childCopy(device, &observer);
             status = WriteResult(writeFd, result) ? EXIT_SUCCESS : EXIT_FAILURE;
         } catch (const std::exception& e) {
+            processSync->Abort();
             std::fprintf(stderr, "[fork-copy] device %zu failed: %s\n", device, e.what());
         } catch (...) {
+            processSync->Abort();
             std::fprintf(stderr, "[fork-copy] device %zu failed with unknown error\n", device);
         }
     }
@@ -224,9 +470,11 @@ inline CopyResult::Result MergeForkedResults(std::vector<CopyResult::Result>&& r
 }
 
 inline std::vector<CopyResult::Result> RunForkedCopyBatchPerDevice(
-    const CopyCase::Context& ctx, const ForkedChildCopyFn& childCopy)
+    const CopyCase::Context& ctx, const ForkedChildCopyFn& childCopy,
+    ForkedProcessTiming* timing = nullptr)
 {
     ASSERT(ctx.nDevice > 0);
+    ForkProcessSync processSync{ctx.nDevice, ctx.iter, ctx.processSyncMode};
     std::vector<ForkedChildProcess> children;
     children.reserve(ctx.nDevice);
 
@@ -237,7 +485,7 @@ inline std::vector<CopyResult::Result> RunForkedCopyBatchPerDevice(
         ASSERT(pid != -1);
         if (pid == 0) {
             close(pipeFds[0]);
-            RunChildCopy(device, pipeFds[1], childCopy);
+            RunChildCopy(device, pipeFds[1], &processSync, childCopy);
         }
 
         close(pipeFds[1]);
@@ -274,6 +522,7 @@ inline std::vector<CopyResult::Result> RunForkedCopyBatchPerDevice(
     }
     ASSERT(!failed);
     ASSERT(childResults.size() == ctx.nDevice);
+    if (timing != nullptr) { *timing = processSync.CollectTiming(); }
 
     return childResults;
 }
@@ -282,9 +531,14 @@ inline CopyResult::Result RunForkedCopyBatch(const CopyCase::Context& ctx, std::
                                              std::string dstName, std::string methodName,
                                              const ForkedChildCopyFn& childCopy)
 {
-    auto childResults = RunForkedCopyBatchPerDevice(ctx, childCopy);
-    return MergeForkedResults(std::move(childResults), std::move(srcName), std::move(dstName),
-                              std::move(methodName));
+    ForkedProcessTiming timing;
+    auto childResults = RunForkedCopyBatchPerDevice(ctx, childCopy, &timing);
+    auto result = MergeForkedResults(std::move(childResults), std::move(srcName),
+                                     std::move(dstName), std::move(methodName));
+    result.SetProcessTiming(CopyProcessSyncModeName(ctx.processSyncMode),
+                            std::move(timing.startSkewCosts),
+                            std::move(timing.groupWallCosts));
+    return result;
 }
 
 }  // namespace ascend_copy
