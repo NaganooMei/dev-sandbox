@@ -201,10 +201,6 @@ protected:
         ASSERT(inFlight_.empty());
         ASCEND_ASSERT(aclrtSetDevice(contexts_[0].deviceId));
         ASCEND_ASSERT(aclrtRecordEvent(totalStart_, contexts_[0].stream));
-        for (size_t i = 1; i < contexts_.size(); ++i) {
-            ASCEND_ASSERT(aclrtSetDevice(contexts_[i].deviceId));
-            ASCEND_ASSERT(aclrtStreamWaitEvent(contexts_[i].stream, totalStart_));
-        }
 
         const auto submitStart = steady_clock::now();
         SubmitTasks();
@@ -245,6 +241,12 @@ protected:
             ASSERT(!group.empty());
             auto& firstContext = contexts_[group.front()];
             ASCEND_ASSERT(aclrtSetDevice(firstContext.deviceId));
+            for (const auto contextIndex : group) {
+                auto& ctx = contexts_[contextIndex];
+                if (contextIndex != 0) {
+                    ASCEND_ASSERT(aclrtStreamWaitEvent(ctx.stream, totalStart_));
+                }
+            }
 
             if (submitMode_ == CopySubmitMode::ROUND_ROBIN) {
                 for (const auto taskIndex : taskGroups_[groupIndex]) { SubmitTask(taskIndex); }
