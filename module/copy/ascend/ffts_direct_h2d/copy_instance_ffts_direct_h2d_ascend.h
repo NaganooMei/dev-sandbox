@@ -201,6 +201,7 @@ protected:
         ASSERT(inFlight_.empty());
         ASCEND_ASSERT(aclrtSetDevice(contexts_[0].deviceId));
         ASCEND_ASSERT(aclrtRecordEvent(totalStart_, contexts_[0].stream));
+        ArmStartDependencies();
 
         const auto submitStart = steady_clock::now();
         SubmitTasks();
@@ -222,6 +223,20 @@ protected:
         return {copyCost, submitCost};
     }
 
+    void ArmStartDependencies()
+    {
+        for (const auto& group : contextGroups_) {
+            if (group.empty()) { continue; }
+            ASCEND_ASSERT(aclrtSetDevice(contexts_[group[0]].deviceId));
+            for (const auto contextIndex : group) {
+                if (contextIndex != 0) {
+                    auto& ctx = contexts_[contextIndex];
+                    ASCEND_ASSERT(aclrtStreamWaitEvent(ctx.stream, totalStart_));
+                }
+            }
+        }
+    }
+
     void SubmitTask(size_t taskIndex)
     {
         const auto& task = tasks_[taskIndex];
@@ -241,12 +256,6 @@ protected:
             ASSERT(!group.empty());
             auto& firstContext = contexts_[group.front()];
             ASCEND_ASSERT(aclrtSetDevice(firstContext.deviceId));
-            for (const auto contextIndex : group) {
-                auto& ctx = contexts_[contextIndex];
-                if (contextIndex != 0) {
-                    ASCEND_ASSERT(aclrtStreamWaitEvent(ctx.stream, totalStart_));
-                }
-            }
 
             if (submitMode_ == CopySubmitMode::ROUND_ROBIN) {
                 for (const auto taskIndex : taskGroups_[groupIndex]) { SubmitTask(taskIndex); }

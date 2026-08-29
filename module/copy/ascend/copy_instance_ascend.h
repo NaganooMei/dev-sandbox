@@ -540,6 +540,7 @@ protected:
 
         ASCEND_ASSERT(aclrtSetDevice(contexts_[0].deviceId));
         ASCEND_ASSERT(aclrtRecordEvent(totalStart_, contexts_[0].stream));
+        ArmStartDependencies();
 
         auto submitStart = steady_clock::now();
         SubmitGroups();
@@ -557,6 +558,20 @@ protected:
         size_t copyCost = static_cast<size_t>(copyCostMs * 1000);
 
         return {copyCost, submitCost};
+    }
+
+    void ArmStartDependencies()
+    {
+        for (const auto& group : contextGroups_) {
+            if (group.empty()) { continue; }
+            ASCEND_ASSERT(aclrtSetDevice(contexts_[group[0]].deviceId));
+            for (const auto contextIndex : group) {
+                if (contextIndex != 0) {
+                    auto& ctx = contexts_[contextIndex];
+                    ASCEND_ASSERT(aclrtStreamWaitEvent(ctx.stream, totalStart_));
+                }
+            }
+        }
     }
 
     void StartSubmitWorkers(size_t workerCount)
@@ -664,11 +679,6 @@ protected:
         if (group.empty()) { return; }
 
         ASCEND_ASSERT(aclrtSetDevice(contexts_[group[0]].deviceId));
-        for (const auto contextIndex : group) {
-            auto& ctx = contexts_[contextIndex];
-            if (contextIndex != 0) { ASCEND_ASSERT(aclrtStreamWaitEvent(ctx.stream, totalStart_)); }
-        }
-
         if (submitMode_ == CopySubmitMode::ROUND_ROBIN) {
             for (const auto taskIndex : taskGroups_[groupIndex]) { SubmitTask(tasks_[taskIndex]); }
         } else {
