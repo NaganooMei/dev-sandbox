@@ -37,6 +37,8 @@ struct ArgsParser {
         .ioMode = CopyIoMode::UNIFORM,
         .submitMode = CopySubmitMode::STREAM_MAJOR,
         .processSyncMode = CopyProcessSyncMode::BARRIER,
+        .streamStartGate = true,
+        .streamSyncMode = CopyStreamSyncMode::EVENT,
         .iter = 128,
         .nDevice = 8};
 
@@ -61,6 +63,12 @@ struct ArgsParser {
         fmt::println("  --process-sync <mode>");
         fmt::println("                   barrier or none for forked multi-device cases");
         fmt::println("                   (default: barrier)");
+        fmt::println("  --stream-start-gate <mode>");
+        fmt::println("                   on or off for the cross-stream totalStart wait");
+        fmt::println("                   (default: on)");
+        fmt::println("  --stream-sync <mode>");
+        fmt::println("                   event or stream for multi-stream completion");
+        fmt::println("                   (default: event)");
         fmt::println("  -i <count>       Iteration count (default: 128)");
         fmt::println("  -d <count>       Number of devices (default: 8)");
     }
@@ -120,6 +128,20 @@ struct ArgsParser {
         fmt::println("Invalid process sync mode. Use barrier or none.");
         std::exit(EXIT_FAILURE);
     }
+    static bool ParseStreamStartGate(std::string_view mode)
+    {
+        if (mode == "on") { return true; }
+        if (mode == "off") { return false; }
+        fmt::println("Invalid stream start gate mode. Use on or off.");
+        std::exit(EXIT_FAILURE);
+    }
+    static CopyStreamSyncMode ParseStreamSyncMode(std::string_view mode)
+    {
+        if (mode == "event") { return CopyStreamSyncMode::EVENT; }
+        if (mode == "stream") { return CopyStreamSyncMode::STREAM; }
+        fmt::println("Invalid stream sync mode. Use event or stream.");
+        std::exit(EXIT_FAILURE);
+    }
     ArgsParser(int argc, char const* argv[])
     {
         for (int i = 1; i < argc; ++i) {
@@ -145,6 +167,10 @@ struct ArgsParser {
                 ctx.submitMode = ParseSubmitMode(argv[++i]);
             } else if (arg == "--process-sync" && i + 1 < argc) {
                 ctx.processSyncMode = ParseProcessSyncMode(argv[++i]);
+            } else if (arg == "--stream-start-gate" && i + 1 < argc) {
+                ctx.streamStartGate = ParseStreamStartGate(argv[++i]);
+            } else if (arg == "--stream-sync" && i + 1 < argc) {
+                ctx.streamSyncMode = ParseStreamSyncMode(argv[++i]);
             } else if (arg == "-i" && i + 1 < argc) {
                 ctx.iter = ParseUnsigned(argv[++i], "Invalid iteration count.");
             } else if (arg == "-d" && i + 1 < argc) {

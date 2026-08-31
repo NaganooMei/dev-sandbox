@@ -121,6 +121,8 @@ std::string FftsDirectMethodName(const CopyCase::Context& ctx)
 {
     return "ffts-direct-h2d-" + std::to_string(FftsDirectStreamCount(ctx)) + "s" +
            CopySubmitModeSuffix(ctx.submitMode) +
+           CopyStreamStartGateSuffix(ctx.streamStartGate) +
+           CopyStreamSyncModeSuffix(ctx.streamSyncMode) +
            (ctx.ioMode == CopyIoMode::GLM51 ? "-GLM51" : "");
 }
 
@@ -145,7 +147,8 @@ DEFINE_COPY_CASE_NO_RUNTIME(
 
             FftsDirectH2DCopyInstance instance{ctx.iter, false, ctx.frags,
                                                FftsDirectStreamCount(ctx), ctx.ioMode,
-                                               ctx.submitMode};
+                                               ctx.submitMode, ctx.streamStartGate,
+                                               ctx.streamSyncMode};
             auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer, observer);
             ValidateFftsDirectDeviceBufferIfEnabled(dstBuffer, validationEnabled);
             return childResult;
@@ -175,7 +178,8 @@ DEFINE_COPY_CASE_NO_RUNTIME(
 
             FftsDirectH2DCopyInstance instance{ctx.iter, false, ctx.frags,
                                                FftsDirectStreamCount(ctx), ctx.ioMode,
-                                               ctx.submitMode};
+                                               ctx.submitMode, ctx.streamStartGate,
+                                               ctx.streamSyncMode};
             auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer, observer);
             ValidateFftsDirectDeviceBufferIfEnabled(dstBuffer, validationEnabled);
             return childResult;
@@ -208,7 +212,8 @@ DEFINE_COPY_CASE_NO_RUNTIME(
 
             FftsDirectH2DCopyInstance instance{ctx.iter, false, ctx.frags,
                                                FftsDirectStreamCount(ctx), ctx.ioMode,
-                                               ctx.submitMode};
+                                               ctx.submitMode, ctx.streamStartGate,
+                                               ctx.streamSyncMode};
             auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer, observer);
             ValidateFftsDirectDeviceBufferIfEnabled(dstBuffer, validationEnabled);
             return childResult;

@@ -9,9 +9,21 @@ COPY_BIN=${COPY_BIN:-"${REPO_ROOT}/build/module/copy/copy"}
 ITERATIONS=${ITERATIONS:-128}
 BLOCKS=${BLOCKS:-512}
 FFTS_LANES=${FFTS_LANES:-3}
+STREAM_START_GATE=${STREAM_START_GATE:-on}
+STREAM_SYNC_MODE=${STREAM_SYNC_MODE:-event}
 LOG_ROOT=${LOG_ROOT:-"${REPO_ROOT}/logs/glm512_matrix"}
 RUN_ID=${RUN_ID:-$(date +%Y%m%d_%H%M%S)}
 OUTPUT_DIR="${LOG_ROOT}/${RUN_ID}"
+
+if [[ "${STREAM_START_GATE}" != "on" && "${STREAM_START_GATE}" != "off" ]]; then
+    echo "STREAM_START_GATE must be on or off: ${STREAM_START_GATE}" >&2
+    exit 1
+fi
+
+if [[ "${STREAM_SYNC_MODE}" != "event" && "${STREAM_SYNC_MODE}" != "stream" ]]; then
+    echo "STREAM_SYNC_MODE must be event or stream: ${STREAM_SYNC_MODE}" >&2
+    exit 1
+fi
 
 if [[ ! -x "${COPY_BIN}" ]]; then
     echo "copy binary is missing or not executable: ${COPY_BIN}" >&2
@@ -24,7 +36,7 @@ mkdir -p "${OUTPUT_DIR}"
 SUMMARY_FILE="${OUTPUT_DIR}/summary.tsv"
 ALL_LOG="${OUTPUT_DIR}/all.log"
 
-printf 'method\tdevices\tstreams\tsubmit_mode\tprocess_sync\tblocks\titerations\texit_code\tdev_bw_gbps\tstart_skew_avg_us\tgroup_wall_avg_us\twall_bw_gbps\tlog\n' \
+printf 'method\tdevices\tstreams\tsubmit_mode\tprocess_sync\tstream_start_gate\tstream_sync\tblocks\titerations\texit_code\tdev_bw_gbps\tstart_skew_avg_us\tgroup_wall_avg_us\twall_bw_gbps\tlog\n' \
     >"${SUMMARY_FILE}"
 
 methods=(ce ffts)
@@ -60,7 +72,7 @@ for method in "${methods[@]}"; do
                 for process_sync in "${process_sync_modes[@]}"; do
                     run_index=$((run_index + 1))
                     safe_submit=${submit_mode//-/_}
-                    log_file="${OUTPUT_DIR}/${method}_d${devices}_s${streams}_${safe_submit}_${process_sync}.log"
+                    log_file="${OUTPUT_DIR}/${method}_d${devices}_s${streams}_${safe_submit}_${process_sync}_${STREAM_START_GATE}_${STREAM_SYNC_MODE}.log"
 
                     command=(
                         "${COPY_BIN}"
@@ -71,6 +83,8 @@ for method in "${methods[@]}"; do
                         -S "${streams}"
                         --submit-mode "${submit_mode}"
                         --process-sync "${process_sync}"
+                        --stream-start-gate "${STREAM_START_GATE}"
+                        --stream-sync "${STREAM_SYNC_MODE}"
                         -i "${ITERATIONS}"
                         -d "${devices}"
                     )
@@ -81,9 +95,10 @@ for method in "${methods[@]}"; do
                     fi
 
                     {
-                        printf '\n[%d/%d] method=%s devices=%s streams=%s submit=%s process_sync=%s\n' \
+                        printf '\n[%d/%d] method=%s devices=%s streams=%s submit=%s process_sync=%s stream_start_gate=%s stream_sync=%s\n' \
                             "${run_index}" "${total_runs}" "${method}" "${devices}" \
-                            "${streams}" "${submit_mode}" "${process_sync}"
+                            "${streams}" "${submit_mode}" "${process_sync}" \
+                            "${STREAM_START_GATE}" "${STREAM_SYNC_MODE}"
                         printf 'command: %s\n' "${command_text}"
                     } | tee "${log_file}" | tee -a "${ALL_LOG}"
 
@@ -108,9 +123,11 @@ for method in "${methods[@]}"; do
                     wall_bw=$(extract_last 's/.*WallBW\(GB\/s\)=([0-9.]+).*/\1/p' \
                         "${log_file}")
 
-                    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+                    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
                         "${method}" "${devices}" "${streams}" "${submit_mode}" \
-                        "${process_sync}" "${BLOCKS}" "${ITERATIONS}" "${rc}" \
+                        "${process_sync}" "${STREAM_START_GATE}" "${STREAM_SYNC_MODE}" \
+                        "${BLOCKS}" \
+                        "${ITERATIONS}" "${rc}" \
                         "${dev_bw}" "${start_skew_avg}" "${group_wall_avg}" "${wall_bw}" \
                         "${log_file}" >>"${SUMMARY_FILE}"
 

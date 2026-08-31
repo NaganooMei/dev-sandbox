@@ -109,11 +109,16 @@ public:
                      "Method", "Size(KB)", "Count", "Submit(us)-(Min/Max/Avg/P50/P90)",
                      "Copy(us)-(Min/Max/Avg/P50/P90)", "BW(GB/s)");
         for (const auto& result : results_) {
-            auto bw =
-                result.size * result.count * 1e6f / result.copy.avg / 1024.f / 1024.f / 1024.f;
-            fmt::println("{}{:<18}{:<18}{:<10}{:<10.0f}{:<8}{:<40}{:<44}{:.3f}", indentation,
+            const auto copyText =
+                result.copyCosts.empty() ? std::string{"N/A"} : result.copy.ToString();
+            const auto bwText =
+                result.copyCosts.empty()
+                    ? std::string{"N/A"}
+                    : fmt::format("{:.3f}", result.size * result.count * 1e6f /
+                                                 result.copy.avg / 1024.f / 1024.f / 1024.f);
+            fmt::println("{}{:<18}{:<18}{:<10}{:<10.0f}{:<8}{:<40}{:<44}{}", indentation,
                          result.src, result.dst, result.method, result.size / 1024.f, result.count,
-                         result.submit.ToString(), result.copy.ToString(), bw);
+                         result.submit.ToString(), copyText, bwText);
             if (!result.groupWallCosts.empty()) {
                 const auto wallBw = result.size * result.count * 1e6f / result.groupWall.avg /
                                     1024.f / 1024.f / 1024.f;

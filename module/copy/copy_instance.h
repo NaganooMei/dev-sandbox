@@ -54,6 +54,8 @@ protected:
 
     virtual void Cleanup() = 0;
 
+    virtual bool HasDeviceCopyTiming() const { return true; }
+
 public:
     CopyInstance(size_t iterations, bool affinitySrc)
         : iterations_(iterations), affinitySrc_(affinitySrc)
@@ -79,7 +81,7 @@ public:
             if (observer != nullptr) { observer->BeforeIteration(i); }
             auto [copyCost, submitCost] = DoCopyOnce();
             if (observer != nullptr) { observer->AfterIteration(i); }
-            copyCostArray.push_back(copyCost);
+            if (HasDeviceCopyTiming()) { copyCostArray.push_back(copyCost); }
             submitCostArray.push_back(submitCost);
         }
 

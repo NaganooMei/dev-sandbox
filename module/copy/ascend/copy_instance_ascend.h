@@ -41,10 +41,10 @@
 #include "error_handle_ascend.h"
 
 struct AscendStreamContext {
-    size_t deviceId;
-    aclrtStream stream;
-    aclrtEvent endEvent;
-    size_t size;
+    size_t deviceId = 0;
+    aclrtStream stream = nullptr;
+    aclrtEvent endEvent = nullptr;
+    size_t size = 0;
     std::vector<void*> src;
     std::vector<void*> dst;
 };
@@ -430,11 +430,13 @@ protected:
     std::vector<CopyTask> tasks_;
     std::vector<std::vector<size_t>> taskGroups_;
     std::vector<std::unique_ptr<SubmitWorker>> submitWorkers_;
-    aclrtEvent totalStart_;
-    aclrtEvent totalEnd_;
+    aclrtEvent totalStart_ = nullptr;
+    aclrtEvent totalEnd_ = nullptr;
     size_t streamCount_;
     CopyIoMode ioMode_;
     CopySubmitMode submitMode_;
+    bool streamStartGate_;
+    CopyStreamSyncMode streamSyncMode_;
 
     void Prepare(const std::vector<const CopyBuffer*>& srcBuffers,
                  const std::vector<const CopyBuffer*>& dstBuffers) override
@@ -473,7 +475,9 @@ protected:
                 ctx.deviceId = deviceId;
                 ctx.size = src.Size();
                 ASCEND_ASSERT(aclrtCreateStream(&ctx.stream));
-                ASCEND_ASSERT(aclrtCreateEvent(&ctx.endEvent));
+                if (streamSyncMode_ == CopyStreamSyncMode::EVENT) {
+                    ASCEND_ASSERT(aclrtCreateEvent(&ctx.endEvent));
+                }
                 group.push_back(contexts_.size());
                 contexts_.push_back(std::move(ctx));
                 contextTasks_.emplace_back();
@@ -511,8 +515,12 @@ protected:
 
         ASSERT(!contexts_.empty());
         ASCEND_ASSERT(aclrtSetDevice(contexts_[0].deviceId));
-        ASCEND_ASSERT(aclrtCreateEvent(&totalStart_));
-        ASCEND_ASSERT(aclrtCreateEvent(&totalEnd_));
+        if (streamSyncMode_ == CopyStreamSyncMode::EVENT || streamStartGate_) {
+            ASCEND_ASSERT(aclrtCreateEvent(&totalStart_));
+        }
+        if (streamSyncMode_ == CopyStreamSyncMode::EVENT) {
+            ASCEND_ASSERT(aclrtCreateEvent(&totalEnd_));
+        }
         StartSubmitWorkers(contextGroups_.size());
     }
 
@@ -521,12 +529,24 @@ protected:
         StopSubmitWorkers();
         for (auto& ctx : contexts_) {
             ASCEND_ASSERT(aclrtSetDevice(ctx.deviceId));
-            ASCEND_ASSERT(aclrtDestroyEvent(ctx.endEvent));
-            ASCEND_ASSERT(aclrtDestroyStream(ctx.stream));
+            if (ctx.endEvent != nullptr) {
+                ASCEND_ASSERT(aclrtDestroyEvent(ctx.endEvent));
+                ctx.endEvent = nullptr;
+            }
+            if (ctx.stream != nullptr) {
+                ASCEND_ASSERT(aclrtDestroyStream(ctx.stream));
+                ctx.stream = nullptr;
+            }
         }
         ASCEND_ASSERT(aclrtSetDevice(contexts_[0].deviceId));
-        ASCEND_ASSERT(aclrtDestroyEvent(totalStart_));
-        ASCEND_ASSERT(aclrtDestroyEvent(totalEnd_));
+        if (totalStart_ != nullptr) {
+            ASCEND_ASSERT(aclrtDestroyEvent(totalStart_));
+            totalStart_ = nullptr;
+        }
+        if (totalEnd_ != nullptr) {
+            ASCEND_ASSERT(aclrtDestroyEvent(totalEnd_));
+            totalEnd_ = nullptr;
+        }
         contexts_.clear();
         contextGroups_.clear();
         contextTasks_.clear();
@@ -539,12 +559,19 @@ protected:
         using namespace std::chrono;
 
         ASCEND_ASSERT(aclrtSetDevice(contexts_[0].deviceId));
-        ASCEND_ASSERT(aclrtRecordEvent(totalStart_, contexts_[0].stream));
-        ArmStartDependencies();
+        if (streamSyncMode_ == CopyStreamSyncMode::EVENT || streamStartGate_) {
+            ASCEND_ASSERT(aclrtRecordEvent(totalStart_, contexts_[0].stream));
+        }
+        if (streamStartGate_) { ArmStartDependencies(); }
 
         auto submitStart = steady_clock::now();
         SubmitGroups();
         auto submitCost = duration_cast<microseconds>(steady_clock::now() - submitStart).count();
+
+        if (streamSyncMode_ == CopyStreamSyncMode::STREAM) {
+            SynchronizeAllStreams();
+            return {0, submitCost};
+        }
 
         ASCEND_ASSERT(aclrtSetDevice(contexts_[0].deviceId));
         for (size_t i = 1; i < contexts_.size(); i++) {
@@ -558,6 +585,19 @@ protected:
         size_t copyCost = static_cast<size_t>(copyCostMs * 1000);
 
         return {copyCost, submitCost};
+    }
+
+    bool HasDeviceCopyTiming() const override
+    {
+        return streamSyncMode_ == CopyStreamSyncMode::EVENT;
+    }
+
+    void SynchronizeAllStreams()
+    {
+        for (auto& ctx : contexts_) {
+            ASCEND_ASSERT(aclrtSetDevice(ctx.deviceId));
+            ASCEND_ASSERT(aclrtSynchronizeStream(ctx.stream));
+        }
     }
 
     void ArmStartDependencies()
@@ -689,9 +729,11 @@ protected:
             }
         }
 
-        for (const auto contextIndex : group) {
-            auto& ctx = contexts_[contextIndex];
-            ASCEND_ASSERT(aclrtRecordEvent(ctx.endEvent, ctx.stream));
+        if (streamSyncMode_ == CopyStreamSyncMode::EVENT) {
+            for (const auto contextIndex : group) {
+                auto& ctx = contexts_[contextIndex];
+                ASCEND_ASSERT(aclrtRecordEvent(ctx.endEvent, ctx.stream));
+            }
         }
     }
 
@@ -699,17 +741,23 @@ public:
     H2DCEMultiStreamCopyInstance(
         size_t iterations, bool affinitySrc, size_t streamCount,
         CopyIoMode ioMode = CopyIoMode::UNIFORM,
-        CopySubmitMode submitMode = CopySubmitMode::STREAM_MAJOR)
+        CopySubmitMode submitMode = CopySubmitMode::STREAM_MAJOR,
+        bool streamStartGate = true,
+        CopyStreamSyncMode streamSyncMode = CopyStreamSyncMode::EVENT)
         : CopyInstance(iterations, affinitySrc),
           streamCount_(streamCount),
           ioMode_(ioMode),
-          submitMode_(submitMode)
+          submitMode_(submitMode),
+          streamStartGate_(streamStartGate),
+          streamSyncMode_(streamSyncMode)
     {
     }
 
     std::string Name() const override
     {
         return "CE-MS" + std::to_string(streamCount_) + CopySubmitModeSuffix(submitMode_) +
+               CopyStreamStartGateSuffix(streamStartGate_) +
+               CopyStreamSyncModeSuffix(streamSyncMode_) +
                (ioMode_ == CopyIoMode::GLM51 ? "-GLM51" : "");
     }
 };

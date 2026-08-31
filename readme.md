@@ -33,6 +33,12 @@ cmake --build build -j
              IO 布局；glm5.1 下一个 block 固定包含 128K、16K、32K
 --submit-mode stream-major|round-robin
              按 stream 整批下发，或按 block 轮询 stream 下发
+--process-sync barrier|none
+             fork 子进程每轮是否先做 Host barrier，默认 barrier
+--stream-start-gate on|off
+             其他 stream 是否等待 stream0 的 totalStart Event，默认 on
+--stream-sync event|stream
+             使用结束 Event 汇聚，或逐个 aclrtSynchronizeStream，默认 event
 -i <count>  统计迭代次数
 -d <count>  设备数量
 ```
@@ -127,6 +133,10 @@ multi-stream case 在单卡内使用多个 stream 提交 H2D。默认 stream 数
 
 `--submit-mode stream-major` 保留原来的连续分块、逐 stream 下发行为；`--submit-mode round-robin` 按 block 在 stream 间轮询下发。glm5.1 模式下，一个 block 的 128K、16K、32K 三条 IO 始终进入同一个 stream，不会被轮询拆开。
 
+`--stream-start-gate on` 会在每轮为非零 stream 下发 `aclrtStreamWaitEvent(totalStart)`，使 `totalStart -> totalEnd` 严格覆盖全部 stream；`off` 会跳过这组 start wait，更接近自然轮询下发，Method 名增加 `-NOGATE`。no-gate 模式下，`totalStart` 只严格约束 stream0，因此正式聚合性能优先看 `GroupWall`/`WallBW`。
+
+`--stream-sync event` 使用每个 stream 的结束 Event 汇聚到 stream0，再由 stream0 做一次同步；`--stream-sync stream` 不创建结束 Event，而是每轮下发后循环调用每个 stream 的 `aclrtSynchronizeStream`，Method 名增加 `-STREAMSYNC`。stream 模式无法通过设备 Event 计算 `Copy(us)` 和 `BW(GB/s)`，这两列显示 `N/A`，性能口径看 `GroupWall`/`WallBW`。若同时指定 `--stream-start-gate off --stream-sync stream`，本轮不会创建或使用任何 Event。
+
 | case | 源 buffer | 提交方式 | 输出口径 | 说明 |
 | --- | --- | --- | --- | --- |
 | `host_to_device_ce_multi_stream` | 每张卡各自一块 host buffer | 单卡多 stream | 每张卡一行 | 单卡 multi-stream H2D 基线 |
@@ -198,6 +208,8 @@ COPY_FFTS_VALIDATE=1 COPY_FFTS_PIPELINE_OBJECT_FRAGS=8 \
 - 传 `--frags <count>`、`-frags <count>` 或 `-f <count>` 时，`-n` 表示 IO/task 数量，`frags` 表示每个 IO/task 内的 fragment 数量。
 - `-S`、`--streams` 或 `--stream-count` 控制每张卡的 FFTS stream 数，默认值为 1。实际 stream 数不会超过 task/block 数。
 - `--submit-mode stream-major` 先下发一个 stream 的全部 task，再处理下一个 stream；`--submit-mode round-robin` 按 task/block 轮询 stream 下发。
+- `--stream-start-gate off` 跳过其他 stream 对 `totalStart` 的 Event wait，Method 名增加 `-NOGATE`；该模式优先使用 `GroupWall`/`WallBW` 评价聚合性能。
+- `--stream-sync stream` 不记录各 stream 的结束 Event，改为逐个同步所有 stream；设备 `Copy(us)` 和 `BW(GB/s)` 显示 `N/A`，使用 `GroupWall`/`WallBW` 评价性能。
 - `--io-mode glm5.1 -f 3` 启用服务 IO 布局：`-n` 表示 block 数，每个 block 是一个 FFTS task，内部包含 128K、16K、32K 三个 SDMA context，总计 176K。
 - `all_odirect_host_to_all_device_ffts_direct_h2d` 用于覆盖 UCM local O_DIRECT 风格 host buffer，也就是 anonymous mmap + HugeTLB/THP fallback + mapped/pinned register。
 - `one_share_host_to_all_device_ffts_direct_h2d` 对应 shared memory + O_DIRECT 的 host buffer 形态，因为 UCM shared buffer 在 O_DIRECT 下仍是 POSIX shared memory + mapped/pinned register。
@@ -250,6 +262,34 @@ COPY_FFTS_VALIDATE=1 FFTS_MAX_READY_LANES=3 \
 ```
 
 这两个命令每张卡每次迭代都传输 `1024 * 176K`；聚合输出的 `Size(KB)` 为 176，`Count` 为 `1024 * 16`。
+
+关闭 stream start gate 的对应版本只需追加：
+
+```bash
+--stream-start-gate off
+```
+
+例如 CE no-gate：
+
+```bash
+./build/module/copy/copy \
+  -t one_share_host_to_all_device_ce_multi_stream \
+  --io-mode glm5.1 -f 3 -n 1024 -S 16 \
+  --submit-mode round-robin --process-sync barrier \
+  --stream-start-gate off -i 10 -d 16
+```
+
+完全不使用 Event、逐 stream 同步的 CE 版本：
+
+```bash
+./build/module/copy/copy \
+  -t one_share_host_to_all_device_ce_multi_stream \
+  --io-mode glm5.1 -f 3 -n 1024 -S 16 \
+  --submit-mode round-robin --process-sync barrier \
+  --stream-start-gate off --stream-sync stream -i 10 -d 16
+```
+
+FFTS Direct 使用相同的两个参数。完整 GLM512 矩阵默认保留 gate 并使用 Event 汇聚；使用 `STREAM_START_GATE=off STREAM_SYNC_MODE=stream bash scripts/run_glm512_copy_matrix.sh` 可运行相同 48 个无 Event、逐 stream 同步组合。
 
 ## 单源多卡冲突排查顺序
 

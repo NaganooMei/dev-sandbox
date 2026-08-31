@@ -66,6 +66,8 @@ protected:
     size_t streamCount_ = 1;
     CopyIoMode ioMode_ = CopyIoMode::UNIFORM;
     CopySubmitMode submitMode_ = CopySubmitMode::STREAM_MAJOR;
+    bool streamStartGate_ = true;
+    CopyStreamSyncMode streamSyncMode_ = CopyStreamSyncMode::EVENT;
 
     void Prepare(const std::vector<const CopyBuffer*>& srcBuffers,
                  const std::vector<const CopyBuffer*>& dstBuffers) override
@@ -117,7 +119,9 @@ protected:
                 DirectContext ctx;
                 ctx.deviceId = deviceId;
                 ASCEND_ASSERT(aclrtCreateStream(&ctx.stream));
-                ASCEND_ASSERT(aclrtCreateEvent(&ctx.endEvent));
+                if (streamSyncMode_ == CopyStreamSyncMode::EVENT) {
+                    ASCEND_ASSERT(aclrtCreateEvent(&ctx.endEvent));
+                }
                 group.push_back(contexts_.size());
                 contexts_.push_back(std::move(ctx));
             }
@@ -161,8 +165,12 @@ protected:
 
         ASSERT(!contexts_.empty());
         ASCEND_ASSERT(aclrtSetDevice(contexts_[0].deviceId));
-        ASCEND_ASSERT(aclrtCreateEvent(&totalStart_));
-        ASCEND_ASSERT(aclrtCreateEvent(&totalEnd_));
+        if (streamSyncMode_ == CopyStreamSyncMode::EVENT || streamStartGate_) {
+            ASCEND_ASSERT(aclrtCreateEvent(&totalStart_));
+        }
+        if (streamSyncMode_ == CopyStreamSyncMode::EVENT) {
+            ASCEND_ASSERT(aclrtCreateEvent(&totalEnd_));
+        }
     }
 
     void Cleanup() override
@@ -200,14 +208,22 @@ protected:
 
         ASSERT(inFlight_.empty());
         ASCEND_ASSERT(aclrtSetDevice(contexts_[0].deviceId));
-        ASCEND_ASSERT(aclrtRecordEvent(totalStart_, contexts_[0].stream));
-        ArmStartDependencies();
+        if (streamSyncMode_ == CopyStreamSyncMode::EVENT || streamStartGate_) {
+            ASCEND_ASSERT(aclrtRecordEvent(totalStart_, contexts_[0].stream));
+        }
+        if (streamStartGate_) { ArmStartDependencies(); }
 
         const auto submitStart = steady_clock::now();
         SubmitTasks();
         const auto submitCost =
             static_cast<size_t>(duration_cast<microseconds>(steady_clock::now() - submitStart)
                                     .count());
+
+        if (streamSyncMode_ == CopyStreamSyncMode::STREAM) {
+            SynchronizeAllStreams();
+            inFlight_.clear();
+            return {0, submitCost};
+        }
 
         ASCEND_ASSERT(aclrtSetDevice(contexts_[0].deviceId));
         for (size_t i = 1; i < contexts_.size(); ++i) {
@@ -221,6 +237,19 @@ protected:
         ASCEND_ASSERT(aclrtEventElapsedTime(&copyCostMs, totalStart_, totalEnd_));
         const auto copyCost = static_cast<size_t>(copyCostMs * 1000);
         return {copyCost, submitCost};
+    }
+
+    bool HasDeviceCopyTiming() const override
+    {
+        return streamSyncMode_ == CopyStreamSyncMode::EVENT;
+    }
+
+    void SynchronizeAllStreams()
+    {
+        for (auto& ctx : contexts_) {
+            ASCEND_ASSERT(aclrtSetDevice(ctx.deviceId));
+            ASCEND_ASSERT(aclrtSynchronizeStream(ctx.stream));
+        }
     }
 
     void ArmStartDependencies()
@@ -267,9 +296,11 @@ protected:
                 }
             }
 
-            for (const auto contextIndex : group) {
-                auto& ctx = contexts_[contextIndex];
-                ASCEND_ASSERT(aclrtRecordEvent(ctx.endEvent, ctx.stream));
+            if (streamSyncMode_ == CopyStreamSyncMode::EVENT) {
+                for (const auto contextIndex : group) {
+                    auto& ctx = contexts_[contextIndex];
+                    ASCEND_ASSERT(aclrtRecordEvent(ctx.endEvent, ctx.stream));
+                }
             }
         }
     }
@@ -278,19 +309,24 @@ public:
     FftsDirectH2DCopyInstance(
         size_t iterations, bool affinitySrc, size_t fragsPerTask = 0, size_t streamCount = 1,
         CopyIoMode ioMode = CopyIoMode::UNIFORM,
-        CopySubmitMode submitMode = CopySubmitMode::STREAM_MAJOR)
+        CopySubmitMode submitMode = CopySubmitMode::STREAM_MAJOR,
+        bool streamStartGate = true,
+        CopyStreamSyncMode streamSyncMode = CopyStreamSyncMode::EVENT)
         : CopyInstance(iterations, affinitySrc),
           fragsPerTask_(fragsPerTask),
           streamCount_(streamCount),
           ioMode_(ioMode),
-          submitMode_(submitMode)
+          submitMode_(submitMode),
+          streamStartGate_(streamStartGate),
+          streamSyncMode_(streamSyncMode)
     {
     }
 
     std::string Name() const override
     {
         return "ffts-direct-h2d-" + std::to_string(streamCount_) + "s" +
-               CopySubmitModeSuffix(submitMode_) +
+               CopySubmitModeSuffix(submitMode_) + CopyStreamStartGateSuffix(streamStartGate_) +
+               CopyStreamSyncModeSuffix(streamSyncMode_) +
                (ioMode_ == CopyIoMode::GLM51 ? "-GLM51" : "");
     }
 };

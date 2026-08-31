@@ -44,6 +44,8 @@ std::string CEMultiStreamMethodName(const CopyCase::Context& ctx, bool forkSubmi
 {
     return "CE-MS" + std::to_string(CEMultiStreamCount(ctx)) +
            (forkSubmit ? "-FORK" : "") + CopySubmitModeSuffix(ctx.submitMode) +
+           CopyStreamStartGateSuffix(ctx.streamStartGate) +
+           CopyStreamSyncModeSuffix(ctx.streamSyncMode) +
            (ctx.ioMode == CopyIoMode::GLM51 ? "-GLM51" : "");
 }
 
@@ -274,7 +276,8 @@ DEFINE_COPY_CASE(Anonymous2DeviceCEMultiStreamCase, "anonymous_to_device_ce_mult
         AnonymousCopyBuffer srcBuffer{device, bufferSize, ctx.num};
         DeviceCopyBuffer dstBuffer{device, bufferSize, ctx.num};
         H2DCEMultiStreamCopyInstance instance{ctx.iter, false, streamCount, ctx.ioMode,
-                                              ctx.submitMode};
+                                              ctx.submitMode, ctx.streamStartGate,
+                                              ctx.streamSyncMode};
         result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
     }
     result.Show("[[ " + Key() + " ]] " + Brief());
@@ -290,7 +293,8 @@ DEFINE_COPY_CASE(Host2DeviceCEMultiStreamCase, "host_to_device_ce_multi_stream",
         HostCopyBuffer srcBuffer{device, bufferSize, ctx.num};
         DeviceCopyBuffer dstBuffer{device, bufferSize, ctx.num};
         H2DCEMultiStreamCopyInstance instance{ctx.iter, false, streamCount, ctx.ioMode,
-                                              ctx.submitMode};
+                                              ctx.submitMode, ctx.streamStartGate,
+                                              ctx.streamSyncMode};
         result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
     }
     result.Show("[[ " + Key() + " ]] " + Brief());
@@ -312,7 +316,8 @@ DEFINE_COPY_CASE_NO_RUNTIME(
             SharedHostCopyBuffer srcBuffer{srcRegion.ShmName(), device, bufferSize, ctx.num};
             DeviceCopyBuffer dstBuffer{device, bufferSize, ctx.num};
             H2DCEMultiStreamCopyInstance instance{ctx.iter, false, streamCount, ctx.ioMode,
-                                                  ctx.submitMode};
+                                                  ctx.submitMode, ctx.streamStartGate,
+                                                  ctx.streamSyncMode};
             return instance.DoCopy(&srcBuffer, &dstBuffer, observer);
         }));
     result.Show("[[ " + Key() + " ]] " + Brief());
@@ -331,7 +336,8 @@ DEFINE_COPY_CASE(OneHost2AllDeviceCEMultiStreamCase, "one_host_to_all_device_ce_
         dstBuffers[device] = new DeviceCopyBuffer{device, bufferSize, ctx.num};
     }
     H2DCEMultiStreamCopyInstance instance{ctx.iter, false, streamCount, ctx.ioMode,
-                                          ctx.submitMode};
+                                          ctx.submitMode, ctx.streamStartGate,
+                                          ctx.streamSyncMode};
     result.Push(instance.DoCopyBatch(srcBuffers, dstBuffers));
     for (size_t device = 0; device < ctx.nDevice; device++) { delete dstBuffers[device]; }
     result.Show("[[ " + Key() + " ]] " + Brief());
@@ -350,7 +356,8 @@ DEFINE_COPY_CASE_NO_RUNTIME(
             HostCopyBuffer srcBuffer{device, bufferSize, ctx.num};
             DeviceCopyBuffer dstBuffer{device, bufferSize, ctx.num};
             H2DCEMultiStreamCopyInstance instance{ctx.iter, false, streamCount, ctx.ioMode,
-                                                  ctx.submitMode};
+                                                  ctx.submitMode, ctx.streamStartGate,
+                                                  ctx.streamSyncMode};
             return instance.DoCopy(&srcBuffer, &dstBuffer, observer);
         }));
     result.Show("[[ " + Key() + " ]] " + Brief());
@@ -371,7 +378,8 @@ DEFINE_COPY_CASE_NO_RUNTIME(
             AnonymousCopyBuffer srcBuffer{device, bufferSize, ctx.num};
             DeviceCopyBuffer dstBuffer{device, bufferSize, ctx.num};
             H2DCEMultiStreamCopyInstance instance{ctx.iter, false, streamCount, ctx.ioMode,
-                                                  ctx.submitMode};
+                                                  ctx.submitMode, ctx.streamStartGate,
+                                                  ctx.streamSyncMode};
             return instance.DoCopy(&srcBuffer, &dstBuffer, observer);
         }));
     result.Show("[[ " + Key() + " ]] " + Brief());
@@ -393,7 +401,8 @@ DEFINE_COPY_CASE_NO_RUNTIME(
             ODirectHostCopyBuffer srcBuffer{device, bufferSize, ctx.num};
             DeviceCopyBuffer dstBuffer{device, bufferSize, ctx.num};
             H2DCEMultiStreamCopyInstance instance{ctx.iter, false, streamCount, ctx.ioMode,
-                                                  ctx.submitMode};
+                                                  ctx.submitMode, ctx.streamStartGate,
+                                                  ctx.streamSyncMode};
             return instance.DoCopy(&srcBuffer, &dstBuffer, observer);
         }));
     result.Show("[[ " + Key() + " ]] " + Brief());

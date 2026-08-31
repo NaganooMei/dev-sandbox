@@ -43,6 +43,8 @@ public:
         CopyIoMode ioMode;
         CopySubmitMode submitMode;
         CopyProcessSyncMode processSyncMode;
+        bool streamStartGate;
+        CopyStreamSyncMode streamSyncMode;
         size_t iter;
         size_t nDevice;
     };

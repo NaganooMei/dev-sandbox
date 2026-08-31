@@ -33,6 +33,8 @@ enum class CopySubmitMode { STREAM_MAJOR, ROUND_ROBIN };
 
 enum class CopyProcessSyncMode { NONE, BARRIER };
 
+enum class CopyStreamSyncMode { EVENT, STREAM };
+
 constexpr std::array<size_t, 3> kGlm51IoSizes{128ull * 1024ull, 16ull * 1024ull,
                                               32ull * 1024ull};
 constexpr std::array<size_t, 3> kGlm51IoOffsets{0, kGlm51IoSizes[0],
@@ -59,6 +61,21 @@ inline const char* CopySubmitModeSuffix(CopySubmitMode mode)
 inline const char* CopyProcessSyncModeName(CopyProcessSyncMode mode)
 {
     return mode == CopyProcessSyncMode::BARRIER ? "barrier" : "none";
+}
+
+inline const char* CopyStreamStartGateSuffix(bool enabled)
+{
+    return enabled ? "" : "-NOGATE";
+}
+
+inline const char* CopyStreamSyncModeName(CopyStreamSyncMode mode)
+{
+    return mode == CopyStreamSyncMode::STREAM ? "stream" : "event";
+}
+
+inline const char* CopyStreamSyncModeSuffix(CopyStreamSyncMode mode)
+{
+    return mode == CopyStreamSyncMode::STREAM ? "-STREAMSYNC" : "";
 }
 
 inline size_t CopyIoBufferSize(CopyIoMode mode, size_t uniformSize)
