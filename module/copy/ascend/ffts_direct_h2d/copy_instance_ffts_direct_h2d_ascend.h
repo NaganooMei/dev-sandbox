@@ -30,6 +30,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "ascend/copy_phase_trace_ascend.h"
 #include "ascend/error_handle_ascend.h"
 #include "copy_instance.h"
 #include "copy_options.h"
@@ -68,6 +69,7 @@ protected:
     CopySubmitMode submitMode_ = CopySubmitMode::STREAM_MAJOR;
     bool streamStartGate_ = true;
     CopyStreamSyncMode streamSyncMode_ = CopyStreamSyncMode::EVENT;
+    AscendCopyPhaseTrace phaseTrace_;
 
     void Prepare(const std::vector<const CopyBuffer*>& srcBuffers,
                  const std::vector<const CopyBuffer*>& dstBuffers) override
@@ -81,6 +83,7 @@ protected:
         tasks_.clear();
         taskGroups_.clear();
         inFlight_.clear();
+        phaseTrace_.Reset(iterations_);
         contexts_.reserve(srcBuffers.size() * streamCount_);
         contextGroups_.reserve(srcBuffers.size());
         taskGroups_.reserve(srcBuffers.size());
@@ -175,6 +178,8 @@ protected:
 
     void Cleanup() override
     {
+        phaseTrace_.PrintSummary(Name(), contexts_[0].deviceId, streamCount_,
+                                 CopyStreamSyncModeName(streamSyncMode_), iterations_);
         for (auto& ctx : contexts_) {
             ASCEND_ASSERT(aclrtSetDevice(ctx.deviceId));
             if (ctx.endEvent != nullptr) {
@@ -206,22 +211,35 @@ protected:
     {
         using namespace std::chrono;
 
+        AscendCopyPhaseSample phase;
+        AscendCopyPhaseRecorder phaseRecorder{phaseTrace_.Enabled()};
+
         ASSERT(inFlight_.empty());
         ASCEND_ASSERT(aclrtSetDevice(contexts_[0].deviceId));
+        phaseRecorder.Mark(phase.setDeviceUs);
         if (streamSyncMode_ == CopyStreamSyncMode::EVENT || streamStartGate_) {
             ASCEND_ASSERT(aclrtRecordEvent(totalStart_, contexts_[0].stream));
         }
+        phaseRecorder.Mark(phase.recordStartUs);
         if (streamStartGate_) { ArmStartDependencies(); }
+        phaseRecorder.Mark(phase.armStartUs);
 
         const auto submitStart = steady_clock::now();
         SubmitTasks();
         const auto submitCost =
             static_cast<size_t>(duration_cast<microseconds>(steady_clock::now() - submitStart)
                                     .count());
+        phaseRecorder.Mark(phase.submitUs);
 
         if (streamSyncMode_ == CopyStreamSyncMode::STREAM) {
+            phaseRecorder.Mark(phase.fanInUs);
             SynchronizeAllStreams();
+            phaseRecorder.Mark(phase.synchronizeUs);
             inFlight_.clear();
+            phaseRecorder.Mark(phase.releaseUs);
+            phaseRecorder.Mark(phase.elapsedQueryUs);
+            phaseRecorder.Finish(phase.totalHostUs);
+            phaseTrace_.Add(phase);
             return {0, submitCost};
         }
 
@@ -230,11 +248,17 @@ protected:
             ASCEND_ASSERT(aclrtStreamWaitEvent(contexts_[0].stream, contexts_[i].endEvent));
         }
         ASCEND_ASSERT(aclrtRecordEvent(totalEnd_, contexts_[0].stream));
+        phaseRecorder.Mark(phase.fanInUs);
         ASCEND_ASSERT(aclrtSynchronizeStream(contexts_[0].stream));
+        phaseRecorder.Mark(phase.synchronizeUs);
         inFlight_.clear();
+        phaseRecorder.Mark(phase.releaseUs);
 
         float copyCostMs = 0.0f;
         ASCEND_ASSERT(aclrtEventElapsedTime(&copyCostMs, totalStart_, totalEnd_));
+        phaseRecorder.Mark(phase.elapsedQueryUs);
+        phaseRecorder.Finish(phase.totalHostUs);
+        phaseTrace_.Add(phase);
         const auto copyCost = static_cast<size_t>(copyCostMs * 1000);
         return {copyCost, submitCost};
     }
