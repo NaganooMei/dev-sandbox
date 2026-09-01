@@ -62,6 +62,16 @@ void InitializeFftsDirectHostPatternedBuffer(const CopyBuffer& buffer)
     }
 }
 
+void InitializeFftsDirectHostPatternedRange(void* base, size_t firstBlock, size_t blockCount,
+                                            size_t blockSize)
+{
+    auto* bytes = static_cast<char*>(base);
+    for (size_t localBlock = 0; localBlock < blockCount; ++localBlock) {
+        const auto pattern = MakeFftsDirectPattern(firstBlock + localBlock, blockSize);
+        std::memcpy(bytes + localBlock * blockSize, pattern.data(), pattern.size());
+    }
+}
+
 void ResetFftsDirectDeviceBuffer(const CopyBuffer& buffer)
 {
     ASCEND_ASSERT(aclrtSetDevice(buffer.Device()));
@@ -214,6 +224,56 @@ DEFINE_COPY_CASE_NO_RUNTIME(
                                                FftsDirectStreamCount(ctx), ctx.ioMode,
                                                ctx.submitMode, ctx.streamStartGate,
                                                ctx.streamSyncMode};
+            auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer, observer);
+            ValidateFftsDirectDeviceBufferIfEnabled(dstBuffer, validationEnabled);
+            return childResult;
+        }));
+    PrintFftsDirectValidationPassIfEnabled(*this, validationEnabled);
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
+DEFINE_COPY_CASE_NO_RUNTIME(
+    RankStripedHost2AllDeviceFftsDirectH2DCase,
+    "rank_striped_host_to_all_device_ffts_direct_h2d",
+    "copy per-rank shared mapped host segments to all devices with rotated ffts direct h2d",
+    ctx)
+{
+    ASSERT(ctx.nDevice > 0);
+    ASSERT(ctx.num > 0);
+    const bool validationEnabled = FftsDirectValidationEnabled();
+    const auto bufferCount = FftsDirectBufferCount(ctx);
+    const auto bufferSize = CopyIoBufferSize(ctx.ioMode, ctx.size);
+    const auto taskFrags =
+        ctx.ioMode == CopyIoMode::GLM51 ? size_t{1} : (ctx.frags == 0 ? bufferCount : ctx.frags);
+    ASSERT(taskFrags > 0);
+    ASSERT(bufferCount % taskFrags == 0);
+    const auto taskCount = bufferCount / taskFrags;
+    ASSERT(bufferCount % ctx.nDevice == 0);
+    ASSERT(taskCount % ctx.nDevice == 0);
+    const auto tasksPerSegment = taskCount / ctx.nDevice;
+    RankStripedSharedHostSet srcSet{"rank_striped_host_to_all_device_ffts_direct_h2d",
+                                    ctx.nDevice};
+
+    CopyResult result;
+    result.Push(ascend_copy::RunForkedCopyBatchWithSync(
+        ctx,
+        ctx.ioMode == CopyIoMode::GLM51 ? "acl::rank_striped_shm_mapped::glm5.1"
+                                        : "acl::rank_striped_shm_mapped::all",
+        "acl::device::all",
+        FftsDirectMethodName(ctx) + "-RANK-STRIPED",
+        [&](size_t device, CopyIterationObserver* observer,
+            ascend_copy::ForkProcessSync* processSync) {
+            FftsRankStripedMappedSharedHostCopyBuffer srcBuffer{
+                srcSet.ShmNames(), device, bufferSize, bufferCount,
+                [processSync, device]() { processSync->SetupBarrier(device, 0); },
+                InitializeFftsDirectHostPatternedRange};
+            DeviceCopyBuffer dstBuffer{device, bufferSize, bufferCount};
+            ResetFftsDirectDeviceBuffer(dstBuffer);
+
+            const auto taskOrderOffset = device * tasksPerSegment;
+            FftsDirectH2DCopyInstance instance{
+                ctx.iter, false, ctx.frags, FftsDirectStreamCount(ctx), ctx.ioMode,
+                ctx.submitMode, ctx.streamStartGate, ctx.streamSyncMode, taskOrderOffset};
             auto childResult = instance.DoCopy(&srcBuffer, &dstBuffer, observer);
             ValidateFftsDirectDeviceBufferIfEnabled(dstBuffer, validationEnabled);
             return childResult;

@@ -438,6 +438,7 @@ protected:
     CopySubmitMode submitMode_;
     bool streamStartGate_;
     CopyStreamSyncMode streamSyncMode_;
+    size_t taskOrderOffset_;
     AscendCopyPhaseTrace phaseTrace_;
 
     void Prepare(const std::vector<const CopyBuffer*>& srcBuffers,
@@ -491,20 +492,21 @@ protected:
             for (size_t taskIndex = 0; taskIndex < taskCount; ++taskIndex) {
                 const size_t stream = CopyTaskStreamIndex(submitMode_, taskIndex, taskCount,
                                                           activeStreamCount);
+                const size_t blockIndex = (taskOrderOffset_ + taskIndex) % taskCount;
 
                 CopyTask task;
                 task.contextIndex = group[stream];
                 if (ioMode_ == CopyIoMode::GLM51) {
                     task.copies.reserve(kGlm51IoCount);
-                    auto* srcBase = static_cast<char*>(src[taskIndex]);
-                    auto* dstBase = static_cast<char*>(dst[taskIndex]);
+                    auto* srcBase = static_cast<char*>(src[blockIndex]);
+                    auto* dstBase = static_cast<char*>(dst[blockIndex]);
                     for (size_t io = 0; io < kGlm51IoCount; ++io) {
                         task.copies.push_back(
                             {dstBase + kGlm51IoOffsets[io], srcBase + kGlm51IoOffsets[io],
                              kGlm51IoSizes[io]});
                     }
                 } else {
-                    task.copies.push_back({dst[taskIndex], src[taskIndex], src.Size()});
+                    task.copies.push_back({dst[blockIndex], src[blockIndex], src.Size()});
                 }
 
                 const size_t globalTaskIndex = tasks_.size();
@@ -767,13 +769,15 @@ public:
         CopyIoMode ioMode = CopyIoMode::UNIFORM,
         CopySubmitMode submitMode = CopySubmitMode::STREAM_MAJOR,
         bool streamStartGate = true,
-        CopyStreamSyncMode streamSyncMode = CopyStreamSyncMode::EVENT)
+        CopyStreamSyncMode streamSyncMode = CopyStreamSyncMode::EVENT,
+        size_t taskOrderOffset = 0)
         : CopyInstance(iterations, affinitySrc),
           streamCount_(streamCount),
           ioMode_(ioMode),
           submitMode_(submitMode),
           streamStartGate_(streamStartGate),
-          streamSyncMode_(streamSyncMode)
+          streamSyncMode_(streamSyncMode),
+          taskOrderOffset_(taskOrderOffset)
     {
     }
 

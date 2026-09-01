@@ -323,6 +323,44 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
 
+DEFINE_COPY_CASE_NO_RUNTIME(
+    RankStripedHost2AllDeviceCEMultiStreamCase,
+    "rank_striped_host_to_all_device_ce_multi_stream",
+    "memcpy from per-rank shared host segments to all devices with rotated ce multi-stream "
+    "fork submit",
+    ctx)
+{
+    ASSERT(ctx.nDevice > 0);
+    ASSERT(ctx.num > 0);
+    ASSERT(ctx.num % ctx.nDevice == 0);
+    const auto streamCount = CEMultiStreamCount(ctx);
+    const auto bufferSize = CEMultiStreamBufferSize(ctx);
+    const auto blocksPerSegment = ctx.num / ctx.nDevice;
+    RankStripedSharedHostSet srcSet{"rank_striped_host_to_all_device_ce_multi_stream",
+                                    ctx.nDevice};
+
+    CopyResult result;
+    result.Push(ascend_copy::RunForkedCopyBatchWithSync(
+        ctx,
+        ctx.ioMode == CopyIoMode::GLM51 ? "acl::rank_striped_shm::glm5.1"
+                                        : srcSet.Name(),
+        "acl::device::all",
+        CEMultiStreamMethodName(ctx, true) + "-RANK-STRIPED",
+        [&](size_t device, CopyIterationObserver* observer,
+            ascend_copy::ForkProcessSync* processSync) {
+            RankStripedSharedHostCopyBuffer srcBuffer{
+                srcSet.ShmNames(), device, bufferSize, ctx.num,
+                [processSync, device]() { processSync->SetupBarrier(device, 0); }};
+            DeviceCopyBuffer dstBuffer{device, bufferSize, ctx.num};
+            const auto taskOrderOffset = device * blocksPerSegment;
+            H2DCEMultiStreamCopyInstance instance{
+                ctx.iter, false, streamCount, ctx.ioMode, ctx.submitMode, ctx.streamStartGate,
+                ctx.streamSyncMode, taskOrderOffset};
+            return instance.DoCopy(&srcBuffer, &dstBuffer, observer);
+        }));
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
 DEFINE_COPY_CASE(OneHost2AllDeviceCEMultiStreamCase, "one_host_to_all_device_ce_multi_stream",
                  "memcpy from one host to all device with ce using multi stream", ctx)
 {

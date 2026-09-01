@@ -32,6 +32,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <string>
 #include <sys/mman.h>
@@ -505,6 +506,186 @@ private:
     int fd_ = -1;
     size_t mappedBytes_ = 0;
     bool ownsFd_ = false;
+};
+
+class RankStripedSharedHostSet {
+public:
+    RankStripedSharedHostSet(std::string tag, size_t segmentCount)
+    {
+        ASSERT(segmentCount > 0);
+        const auto prefix = "/copy_ascend_rank_striped_" + std::to_string(getpid()) + "_" +
+                            std::move(tag) + "_" +
+                            std::to_string(reinterpret_cast<std::uintptr_t>(this));
+        shmNames_.reserve(segmentCount);
+        for (size_t segment = 0; segment < segmentCount; ++segment) {
+            shmNames_.push_back(prefix + "_" + std::to_string(segment));
+        }
+    }
+
+    RankStripedSharedHostSet(const RankStripedSharedHostSet&) = delete;
+    RankStripedSharedHostSet& operator=(const RankStripedSharedHostSet&) = delete;
+
+    ~RankStripedSharedHostSet()
+    {
+        for (const auto& shmName : shmNames_) { shm_unlink(shmName.c_str()); }
+    }
+
+    const std::vector<std::string>& ShmNames() const { return shmNames_; }
+    std::string Name() const { return "acl::rank_striped_shm::all"; }
+
+private:
+    std::vector<std::string> shmNames_;
+};
+
+using RankStripedSharedHostInitializer =
+    std::function<void(void* ownerBase, size_t firstBlock, size_t blockCount, size_t blockSize)>;
+
+class RankStripedSharedHostMappings {
+public:
+    RankStripedSharedHostMappings(
+        std::vector<std::string> shmNames, size_t device, size_t blockSize, size_t blockCount,
+        const std::function<void()>& setupBarrier, bool getMappedDevicePointers,
+        const RankStripedSharedHostInitializer& initializer = {})
+        : shmNames_{std::move(shmNames)},
+          device_{device},
+          blockSize_{blockSize},
+          blockCount_{blockCount},
+          getMappedDevicePointers_{getMappedDevicePointers}
+    {
+        ASSERT(!shmNames_.empty());
+        ASSERT(device_ < shmNames_.size());
+        ASSERT(blockCount_ > 0);
+        ASSERT(blockCount_ % shmNames_.size() == 0);
+        ASSERT(static_cast<bool>(setupBarrier));
+        blocksPerSegment_ = blockCount_ / shmNames_.size();
+        const auto effectiveSegmentBytes = CheckedTotalBytes(blockSize_, blocksPerSegment_);
+        mappedSegmentBytes_ = RoundUpToAlignment(effectiveSegmentBytes, kPageSize);
+        hostBases_.assign(shmNames_.size(), MAP_FAILED);
+        mappedDeviceBases_.assign(shmNames_.size(), nullptr);
+        registered_.assign(shmNames_.size(), false);
+
+        ASCEND_ASSERT(aclrtSetDevice(device_));
+        hostBases_[device_] = MapSegment(device_, true);
+        std::memset(hostBases_[device_], 's', mappedSegmentBytes_);
+        if (initializer) {
+            initializer(hostBases_[device_], device_ * blocksPerSegment_, blocksPerSegment_,
+                        blockSize_);
+        }
+
+        setupBarrier();
+
+        for (size_t segment = 0; segment < shmNames_.size(); ++segment) {
+            if (segment != device_) { hostBases_[segment] = MapSegment(segment, false); }
+        }
+
+        for (size_t segment = 0; segment < shmNames_.size(); ++segment) {
+            ASCEND_ASSERT(aclrtHostRegisterV2(hostBases_[segment], mappedSegmentBytes_,
+                                              ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED));
+            registered_[segment] = true;
+            if (getMappedDevicePointers_) {
+                ASCEND_ASSERT(aclrtHostGetDevicePointer(hostBases_[segment],
+                                                        &mappedDeviceBases_[segment], 0));
+            }
+            if (CopyAscendBufferLogEnabled()) {
+                std::fprintf(stderr,
+                             "[copy-buffer] rank-striped device=%zu segment=%zu owner=%d "
+                             "blocks=%zu first_block=%zu mapped_bytes=%zu host=0x%llx "
+                             "mapped=0x%llx shm=%s\n",
+                             device_, segment, segment == device_ ? 1 : 0, blocksPerSegment_,
+                             segment * blocksPerSegment_, mappedSegmentBytes_,
+                             CopyAscendPtrValue(hostBases_[segment]),
+                             CopyAscendPtrValue(mappedDeviceBases_[segment]),
+                             shmNames_[segment].c_str());
+            }
+        }
+    }
+
+    RankStripedSharedHostMappings(const RankStripedSharedHostMappings&) = delete;
+    RankStripedSharedHostMappings& operator=(const RankStripedSharedHostMappings&) = delete;
+
+    ~RankStripedSharedHostMappings()
+    {
+        ASCEND_ASSERT(aclrtSetDevice(device_));
+        for (size_t segment = 0; segment < shmNames_.size(); ++segment) {
+            if (registered_[segment]) { ASCEND_ASSERT(aclrtHostUnregister(hostBases_[segment])); }
+            if (hostBases_[segment] != MAP_FAILED) {
+                munmap(hostBases_[segment], mappedSegmentBytes_);
+                hostBases_[segment] = MAP_FAILED;
+            }
+        }
+    }
+
+    void* HostAt(size_t blockIndex) const
+    {
+        ASSERT(blockIndex < blockCount_);
+        const auto segment = blockIndex / blocksPerSegment_;
+        const auto localBlock = blockIndex % blocksPerSegment_;
+        return static_cast<void*>(static_cast<char*>(hostBases_[segment]) +
+                                  localBlock * blockSize_);
+    }
+
+    void* MappedDeviceAt(size_t blockIndex) const
+    {
+        ASSERT(getMappedDevicePointers_);
+        ASSERT(blockIndex < blockCount_);
+        const auto segment = blockIndex / blocksPerSegment_;
+        const auto localBlock = blockIndex % blocksPerSegment_;
+        return static_cast<void*>(static_cast<char*>(mappedDeviceBases_[segment]) +
+                                  localBlock * blockSize_);
+    }
+
+    size_t BlocksPerSegment() const { return blocksPerSegment_; }
+
+private:
+    static constexpr size_t kPageSize = 4096;
+
+    void* MapSegment(size_t segment, bool create) const
+    {
+        const auto openFlags = create ? O_CREAT | O_EXCL | O_RDWR : O_RDWR;
+        const auto fd = shm_open(shmNames_[segment].c_str(), openFlags, 0600);
+        ASSERT(fd != -1);
+        if (create) { ASSERT(ftruncate(fd, mappedSegmentBytes_) == 0); }
+        constexpr auto prot = PROT_READ | PROT_WRITE;
+        constexpr auto flags = MAP_SHARED | MAP_POPULATE;
+        auto* address = mmap(nullptr, mappedSegmentBytes_, prot, flags, fd, 0);
+        const auto closeStatus = close(fd);
+        ASSERT(closeStatus == 0);
+        ASSERT(address != MAP_FAILED);
+        return address;
+    }
+
+    std::vector<std::string> shmNames_;
+    size_t device_ = 0;
+    size_t blockSize_ = 0;
+    size_t blockCount_ = 0;
+    size_t blocksPerSegment_ = 0;
+    size_t mappedSegmentBytes_ = 0;
+    bool getMappedDevicePointers_ = false;
+    std::vector<void*> hostBases_;
+    std::vector<void*> mappedDeviceBases_;
+    std::vector<bool> registered_;
+};
+
+class RankStripedSharedHostCopyBuffer : public CopyBuffer {
+public:
+    RankStripedSharedHostCopyBuffer(std::vector<std::string> shmNames, size_t device,
+                                    size_t size, size_t number,
+                                    const std::function<void()>& setupBarrier)
+        : CopyBuffer{device, size, number},
+          mappings_{std::move(shmNames), device, size, number, setupBarrier, false}
+    {
+        addr_ = mappings_.HostAt(0);
+    }
+
+    void* At(size_t i) const override { return mappings_.HostAt(i); }
+
+    std::string Name() const override
+    {
+        return "acl::rank_striped_shm::" + std::to_string(device_);
+    }
+
+private:
+    RankStripedSharedHostMappings mappings_;
 };
 
 class SharedHostRegion : public CopyBuffer {

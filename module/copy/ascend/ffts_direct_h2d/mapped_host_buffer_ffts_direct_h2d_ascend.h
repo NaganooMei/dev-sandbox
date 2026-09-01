@@ -29,11 +29,14 @@
 #include <cstdint>
 #include <cstring>
 #include <fcntl.h>
+#include <functional>
 #include <limits>
 #include <string>
 #include <sys/mman.h>
 #include <unistd.h>
 #include <utility>
+#include <vector>
+#include "ascend/copy_buffer_ascend.h"
 #include "ascend/error_handle_ascend.h"
 #include "copy_buffer.h"
 #include "error_handle.h"
@@ -299,6 +302,32 @@ private:
     void* mappedAddr_ = nullptr;
     size_t mappedBytes_ = 0;
     bool registered_ = false;
+};
+
+class FftsRankStripedMappedSharedHostCopyBuffer : public CopyBuffer,
+                                                  public FftsDirectMappedHostBuffer {
+public:
+    FftsRankStripedMappedSharedHostCopyBuffer(
+        std::vector<std::string> shmNames, size_t device, size_t size, size_t number,
+        const std::function<void()>& setupBarrier,
+        const RankStripedSharedHostInitializer& initializer)
+        : CopyBuffer{device, size, number},
+          mappings_{std::move(shmNames), device, size, number, setupBarrier, true, initializer}
+    {
+        addr_ = mappings_.HostAt(0);
+    }
+
+    void* At(size_t i) const override { return mappings_.HostAt(i); }
+
+    void* MappedAt(size_t i) const override { return mappings_.MappedDeviceAt(i); }
+
+    std::string Name() const override
+    {
+        return "acl::rank_striped_shm_mapped::" + std::to_string(device_);
+    }
+
+private:
+    RankStripedSharedHostMappings mappings_;
 };
 
 #endif  // MAPPED_HOST_BUFFER_FFTS_DIRECT_H2D_ASCEND_H

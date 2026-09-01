@@ -51,8 +51,12 @@
 
 namespace ascend_copy {
 
+class ForkProcessSync;
+
 using ForkedChildCopyFn =
     std::function<CopyResult::Result(size_t device, CopyIterationObserver* observer)>;
+using ForkedChildCopyWithSyncFn = std::function<CopyResult::Result(
+    size_t device, CopyIterationObserver* observer, ForkProcessSync* processSync)>;
 
 constexpr std::uint64_t kNanosecondsPerSecond = 1000000000ull;
 constexpr std::uint64_t kProcessBarrierReleaseLeadNs = 1000000ull;
@@ -213,6 +217,8 @@ public:
     }
 
     CopyProcessSyncMode Mode() const { return mode_; }
+
+    void SetupBarrier(size_t device, size_t phase) { WaitForRelease(device, phase); }
 
     void BeforeIteration(size_t device, size_t iteration)
     {
@@ -412,14 +418,14 @@ inline bool ReadResult(int fd, CopyResult::Result& result)
 }
 
 [[noreturn]] inline void RunChildCopy(size_t device, int writeFd, ForkProcessSync* processSync,
-                                       const ForkedChildCopyFn& childCopy)
+                                       const ForkedChildCopyWithSyncFn& childCopy)
 {
     int status = EXIT_FAILURE;
     {
         try {
             CopyRuntime runtime;
             ForkedCopyIterationObserver observer{processSync, device};
-            auto result = childCopy(device, &observer);
+            auto result = childCopy(device, &observer, processSync);
             status = WriteResult(writeFd, result) ? EXIT_SUCCESS : EXIT_FAILURE;
         } catch (const std::exception& e) {
             processSync->Abort();
@@ -469,8 +475,8 @@ inline CopyResult::Result MergeForkedResults(std::vector<CopyResult::Result>&& r
             MergeMaxCosts(results, false)};
 }
 
-inline std::vector<CopyResult::Result> RunForkedCopyBatchPerDevice(
-    const CopyCase::Context& ctx, const ForkedChildCopyFn& childCopy,
+inline std::vector<CopyResult::Result> RunForkedCopyBatchPerDeviceWithSync(
+    const CopyCase::Context& ctx, const ForkedChildCopyWithSyncFn& childCopy,
     ForkedProcessTiming* timing = nullptr)
 {
     ASSERT(ctx.nDevice > 0);
@@ -527,12 +533,38 @@ inline std::vector<CopyResult::Result> RunForkedCopyBatchPerDevice(
     return childResults;
 }
 
+inline std::vector<CopyResult::Result> RunForkedCopyBatchPerDevice(
+    const CopyCase::Context& ctx, const ForkedChildCopyFn& childCopy,
+    ForkedProcessTiming* timing = nullptr)
+{
+    return RunForkedCopyBatchPerDeviceWithSync(
+        ctx,
+        [&childCopy](size_t device, CopyIterationObserver* observer, ForkProcessSync*) {
+            return childCopy(device, observer);
+        },
+        timing);
+}
+
 inline CopyResult::Result RunForkedCopyBatch(const CopyCase::Context& ctx, std::string srcName,
                                              std::string dstName, std::string methodName,
                                              const ForkedChildCopyFn& childCopy)
 {
     ForkedProcessTiming timing;
     auto childResults = RunForkedCopyBatchPerDevice(ctx, childCopy, &timing);
+    auto result = MergeForkedResults(std::move(childResults), std::move(srcName),
+                                     std::move(dstName), std::move(methodName));
+    result.SetProcessTiming(CopyProcessSyncModeName(ctx.processSyncMode),
+                            std::move(timing.startSkewCosts),
+                            std::move(timing.groupWallCosts));
+    return result;
+}
+
+inline CopyResult::Result RunForkedCopyBatchWithSync(
+    const CopyCase::Context& ctx, std::string srcName, std::string dstName,
+    std::string methodName, const ForkedChildCopyWithSyncFn& childCopy)
+{
+    ForkedProcessTiming timing;
+    auto childResults = RunForkedCopyBatchPerDeviceWithSync(ctx, childCopy, &timing);
     auto result = MergeForkedResults(std::move(childResults), std::move(srcName),
                                      std::move(dstName), std::move(methodName));
     result.SetProcessTiming(CopyProcessSyncModeName(ctx.processSyncMode),

@@ -69,6 +69,7 @@ protected:
     CopySubmitMode submitMode_ = CopySubmitMode::STREAM_MAJOR;
     bool streamStartGate_ = true;
     CopyStreamSyncMode streamSyncMode_ = CopyStreamSyncMode::EVENT;
+    size_t taskOrderOffset_ = 0;
     AscendCopyPhaseTrace phaseTrace_;
 
     void Prepare(const std::vector<const CopyBuffer*>& srcBuffers,
@@ -134,12 +135,13 @@ protected:
             for (size_t taskIndex = 0; taskIndex < taskCount; ++taskIndex) {
                 const size_t stream = CopyTaskStreamIndex(submitMode_, taskIndex, taskCount,
                                                           activeStreamCount);
+                const size_t orderedTaskIndex = (taskOrderOffset_ + taskIndex) % taskCount;
 
                 std::vector<AscendFftsCopySpec> copies;
                 if (ioMode_ == CopyIoMode::GLM51) {
                     copies.reserve(kGlm51IoCount);
-                    auto* srcBase = static_cast<char*>(mappedSrc->MappedAt(taskIndex));
-                    auto* dstBase = static_cast<char*>((*dst)[taskIndex]);
+                    auto* srcBase = static_cast<char*>(mappedSrc->MappedAt(orderedTaskIndex));
+                    auto* dstBase = static_cast<char*>((*dst)[orderedTaskIndex]);
                     for (size_t io = 0; io < kGlm51IoCount; ++io) {
                         copies.push_back(
                             {dstBase + kGlm51IoOffsets[io], srcBase + kGlm51IoOffsets[io],
@@ -147,7 +149,7 @@ protected:
                     }
                 } else {
                     copies.reserve(taskFrags);
-                    const size_t first = taskIndex * taskFrags;
+                    const size_t first = orderedTaskIndex * taskFrags;
                     for (size_t fragment = first; fragment < first + taskFrags; ++fragment) {
                         copies.push_back({(*dst)[fragment], mappedSrc->MappedAt(fragment), size});
                     }
@@ -335,14 +337,16 @@ public:
         CopyIoMode ioMode = CopyIoMode::UNIFORM,
         CopySubmitMode submitMode = CopySubmitMode::STREAM_MAJOR,
         bool streamStartGate = true,
-        CopyStreamSyncMode streamSyncMode = CopyStreamSyncMode::EVENT)
+        CopyStreamSyncMode streamSyncMode = CopyStreamSyncMode::EVENT,
+        size_t taskOrderOffset = 0)
         : CopyInstance(iterations, affinitySrc),
           fragsPerTask_(fragsPerTask),
           streamCount_(streamCount),
           ioMode_(ioMode),
           submitMode_(submitMode),
           streamStartGate_(streamStartGate),
-          streamSyncMode_(streamSyncMode)
+          streamSyncMode_(streamSyncMode),
+          taskOrderOffset_(taskOrderOffset)
     {
     }
 
