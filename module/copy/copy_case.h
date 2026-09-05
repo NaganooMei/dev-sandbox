@@ -47,6 +47,7 @@ public:
         CopyStreamSyncMode streamSyncMode;
         size_t iter;
         size_t nDevice;
+        CopyHostRegisterMode hostRegisterMode = CopyHostRegisterMode::V2;
     };
     CopyCase(std::string key, std::string brief) : key_{std::move(key)}, brief_{std::move(brief)} {}
     virtual ~CopyCase() = default;

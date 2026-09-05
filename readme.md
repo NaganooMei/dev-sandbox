@@ -39,6 +39,8 @@ cmake --build build -j
              其他 stream 是否等待 stream0 的 totalStart Event，默认 on
 --stream-sync event|stream
              使用结束 Event 汇聚，或逐个 aclrtSynchronizeStream，默认 event
+--host-register v1|v2
+             FFTS Direct H2D 的 Host 注册方式，默认 v2；不影响 CE 或 FFTS pipeline
 -i <count>  统计迭代次数
 -d <count>  设备数量
 ```
@@ -211,18 +213,37 @@ COPY_FFTS_VALIDATE=1 COPY_FFTS_PIPELINE_OBJECT_FRAGS=8 \
 - `--stream-start-gate off` 跳过其他 stream 对 `totalStart` 的 Event wait，Method 名增加 `-NOGATE`；该模式优先使用 `GroupWall`/`WallBW` 评价聚合性能。
 - `--stream-sync stream` 不记录各 stream 的结束 Event，改为逐个同步所有 stream；设备 `Copy(us)` 和 `BW(GB/s)` 显示 `N/A`，使用 `GroupWall`/`WallBW` 评价性能。
 - `--io-mode glm5.1 -f 3` 启用服务 IO 布局：`-n` 表示 block 数，每个 block 是一个 FFTS task，内部包含 128K、16K、32K 三个 SDMA context，总计 176K。
-- `all_odirect_host_to_all_device_ffts_direct_h2d` 用于覆盖 UCM local O_DIRECT 风格 host buffer，也就是 anonymous mmap + HugeTLB/THP fallback + mapped/pinned register。
-- `one_share_host_to_all_device_ffts_direct_h2d` 对应 shared memory + O_DIRECT 的 host buffer 形态，因为 UCM shared buffer 在 O_DIRECT 下仍是 POSIX shared memory + mapped/pinned register。
+- `--host-register v1|v2` 适用于本组所有 case，包括单 SHM 和 rank-striped SHM。默认 `v2` 保持原有注册行为，Method 增加 `-REGV1` 或 `-REGV2`。
+- `all_odirect_host_to_all_device_ffts_direct_h2d` 用于覆盖 UCM local O_DIRECT 风格 host buffer，也就是 anonymous mmap + HugeTLB/THP fallback；默认 V2 使用 mapped/pinned register。
+- `one_share_host_to_all_device_ffts_direct_h2d` 对应 shared memory + O_DIRECT 的 host buffer 形态，使用 POSIX shared memory；默认 V2 使用 mapped/pinned register。
 
 详细说明见 `ffts_direct_h2d_io_num_odirect.md`。
 
-这一组只有在构建环境检测到 Ascend FFTS 头文件和 `libruntime.so` 时才会编译。它不经过 CE staging，FFTS SDMA descriptor 直接使用 `aclrtHostGetDevicePointer` 返回的 mapped host pointer 作为 source，device pointer 作为 destination。
+这一组只有在构建环境检测到 Ascend FFTS 头文件和 `libruntime.so` 时才会编译。它不经过 CE staging，FFTS SDMA descriptor 直接使用注册得到的 mapped host pointer 作为 source，device pointer 作为 destination。
+
+V1 使用 `aclrtHostRegister(host, bytes, ACL_HOST_REGISTER_MAPPED, &device)` 直接取得设备映射地址，对齐 UCM 未启用 `ASCEND_SUPPORTS_REGISTER_PIN` 时的调用方式。V2 使用 `aclrtHostRegisterV2` 后调用 `aclrtHostGetDevicePointer`；`aclrtMallocHost` case 保持 `ACL_HOST_REG_MAPPED`，O_DIRECT、单 SHM 和 rank-striped SHM case 保持 `ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED`。两种模式都使用 `aclrtHostUnregister` 注销，注册仍在预热和计时之前完成。
+
+64K / 512 block 的 rank-striped SHM 注册方式对比：
+
+```bash
+for reg in v1 v2; do
+  ./build/module/copy/copy \
+    -t rank_striped_host_to_all_device_ffts_direct_h2d \
+    --host-register "$reg" \
+    --io-mode glm5.1 -f 3 -n 512 -S 1 \
+    --submit-mode round-robin --process-sync barrier \
+    --stream-sync stream -i 128 -d 16
+done
+```
+
+单 SHM 对比只需将 case 替换为 `one_share_host_to_all_device_ffts_direct_h2d`。两组比较 `GroupWall` / `WallBW`，并保持相同的 CPU/NUMA 绑定条件。需要检查数据正确性时，在命令前加 `COPY_FFTS_VALIDATE=1`。
 
 | case | 源 buffer | 目标 buffer | 输出口径 | 说明 |
 | --- | --- | --- | --- | --- |
 | `all_host_to_all_device_ffts_direct_h2d` | 每张卡各自一块 `aclrtMallocHost` host buffer，并注册 mapped | device buffer | 聚合一行 | 8 进程、8 host buffer、8 device 的 direct H2D SDMA |
 | `one_share_host_to_all_device_ffts_direct_h2d` | 一块 POSIX shared memory host buffer，每个子进程注册 mapped | device buffer | 聚合一行 | 多进程同时从同一块 shared host 做 direct H2D SDMA |
 | `all_odirect_host_to_all_device_ffts_direct_h2d` | 每张卡各自一块 UCM O_DIRECT 风格 anonymous mmap host buffer，并注册 mapped + pinned | device buffer | 聚合一行 | 覆盖 local direct-IO style host buffer 的 direct H2D SDMA |
+| `rank_striped_host_to_all_device_ffts_direct_h2d` | 每个 rank 创建并初始化一段 POSIX shared memory，各子进程映射所有段 | device buffer | 聚合一行 | 各 rank 从自己所属段开始轮转读取，支持 V1/V2 注册对比 |
 
 推荐命令：
 

@@ -69,6 +69,9 @@ struct ArgsParser {
         fmt::println("  --stream-sync <mode>");
         fmt::println("                   event or stream for multi-stream completion");
         fmt::println("                   (default: event)");
+        fmt::println("  --host-register <mode>");
+        fmt::println("                   v1 or v2 for FFTS Direct H2D host registration");
+        fmt::println("                   (default: v2; does not affect CE or FFTS pipeline)");
         fmt::println("  -i <count>       Iteration count (default: 128)");
         fmt::println("  -d <count>       Number of devices (default: 8)");
     }
@@ -142,6 +145,13 @@ struct ArgsParser {
         fmt::println("Invalid stream sync mode. Use event or stream.");
         std::exit(EXIT_FAILURE);
     }
+    static CopyHostRegisterMode ParseHostRegisterMode(std::string_view mode)
+    {
+        if (mode == "v1") { return CopyHostRegisterMode::V1; }
+        if (mode == "v2") { return CopyHostRegisterMode::V2; }
+        fmt::println("Invalid host register mode. Use v1 or v2.");
+        std::exit(EXIT_FAILURE);
+    }
     ArgsParser(int argc, char const* argv[])
     {
         for (int i = 1; i < argc; ++i) {
@@ -171,6 +181,8 @@ struct ArgsParser {
                 ctx.streamStartGate = ParseStreamStartGate(argv[++i]);
             } else if (arg == "--stream-sync" && i + 1 < argc) {
                 ctx.streamSyncMode = ParseStreamSyncMode(argv[++i]);
+            } else if (arg == "--host-register" && i + 1 < argc) {
+                ctx.hostRegisterMode = ParseHostRegisterMode(argv[++i]);
             } else if (arg == "-i" && i + 1 < argc) {
                 ctx.iter = ParseUnsigned(argv[++i], "Invalid iteration count.");
             } else if (arg == "-d" && i + 1 < argc) {

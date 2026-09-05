@@ -35,6 +35,8 @@ enum class CopyProcessSyncMode { NONE, BARRIER };
 
 enum class CopyStreamSyncMode { EVENT, STREAM };
 
+enum class CopyHostRegisterMode { V1, V2 };
+
 constexpr std::array<size_t, 3> kGlm51IoSizes{128ull * 1024ull, 16ull * 1024ull,
                                               32ull * 1024ull};
 constexpr std::array<size_t, 3> kGlm51IoOffsets{0, kGlm51IoSizes[0],
@@ -76,6 +78,11 @@ inline const char* CopyStreamSyncModeName(CopyStreamSyncMode mode)
 inline const char* CopyStreamSyncModeSuffix(CopyStreamSyncMode mode)
 {
     return mode == CopyStreamSyncMode::STREAM ? "-STREAMSYNC" : "";
+}
+
+inline const char* CopyHostRegisterModeSuffix(CopyHostRegisterMode mode)
+{
+    return mode == CopyHostRegisterMode::V1 ? "-REGV1" : "-REGV2";
 }
 
 inline size_t CopyIoBufferSize(CopyIoMode mode, size_t uniformSize)

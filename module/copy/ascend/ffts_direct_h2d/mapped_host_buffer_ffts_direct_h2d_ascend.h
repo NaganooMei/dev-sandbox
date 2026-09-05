@@ -127,7 +127,8 @@ inline void* FftsDirectMmapODirectHostBuffer(size_t& bytes)
 
 class FftsMappedHostCopyBuffer : public CopyBuffer, public FftsDirectMappedHostBuffer {
 public:
-    FftsMappedHostCopyBuffer(size_t device, size_t size, size_t number)
+    FftsMappedHostCopyBuffer(size_t device, size_t size, size_t number,
+                             CopyHostRegisterMode hostRegisterMode = CopyHostRegisterMode::V2)
         : CopyBuffer{device, size, number}
     {
         const auto total = FftsDirectCheckedTotalBytes(size, number);
@@ -136,9 +137,9 @@ public:
         ASCEND_ASSERT(aclrtMallocHost(&addr_, mappedBytes_));
         ASSERT(FftsDirectIsPageAligned(addr_));
         std::memset(addr_, 'h', total);
-        ASCEND_ASSERT(aclrtHostRegisterV2(addr_, mappedBytes_, ACL_HOST_REG_MAPPED));
+        RegisterCopyHostBuffer(addr_, mappedBytes_, hostRegisterMode, ACL_HOST_REG_MAPPED,
+                               &mappedAddr_);
         registered_ = true;
-        ASCEND_ASSERT(aclrtHostGetDevicePointer(addr_, &mappedAddr_, 0));
     }
 
     ~FftsMappedHostCopyBuffer() override
@@ -170,7 +171,9 @@ private:
 
 class FftsODirectMappedHostCopyBuffer : public CopyBuffer, public FftsDirectMappedHostBuffer {
 public:
-    FftsODirectMappedHostCopyBuffer(size_t device, size_t size, size_t number)
+    FftsODirectMappedHostCopyBuffer(
+        size_t device, size_t size, size_t number,
+        CopyHostRegisterMode hostRegisterMode = CopyHostRegisterMode::V2)
         : CopyBuffer{device, size, number}
     {
         const auto total = FftsDirectCheckedTotalBytes(size, number);
@@ -182,10 +185,9 @@ public:
         locked_ = (mlock(addr_, mappedBytes_) == 0);
 
         ASCEND_ASSERT(aclrtSetDevice(device_));
-        ASCEND_ASSERT(
-            aclrtHostRegisterV2(addr_, mappedBytes_, ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED));
+        RegisterCopyHostBuffer(addr_, mappedBytes_, hostRegisterMode,
+                               ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED, &mappedAddr_);
         registered_ = true;
-        ASCEND_ASSERT(aclrtHostGetDevicePointer(addr_, &mappedAddr_, 0));
     }
 
     ~FftsODirectMappedHostCopyBuffer() override
@@ -259,7 +261,8 @@ private:
 class FftsMappedSharedHostCopyBuffer : public CopyBuffer, public FftsDirectMappedHostBuffer {
 public:
     FftsMappedSharedHostCopyBuffer(std::string shmName, size_t mappedBytes, size_t device,
-                                   size_t size, size_t number)
+                                   size_t size, size_t number,
+                                   CopyHostRegisterMode hostRegisterMode = CopyHostRegisterMode::V2)
         : CopyBuffer{device, size, number}, shmName_{std::move(shmName)}, mappedBytes_{mappedBytes}
     {
         ASSERT(FftsDirectCheckedTotalBytes(size, number) <= mappedBytes_);
@@ -273,10 +276,9 @@ public:
         ASSERT(addr_ != MAP_FAILED);
 
         ASCEND_ASSERT(aclrtSetDevice(device_));
-        ASCEND_ASSERT(
-            aclrtHostRegisterV2(addr_, mappedBytes_, ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED));
+        RegisterCopyHostBuffer(addr_, mappedBytes_, hostRegisterMode,
+                               ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED, &mappedAddr_);
         registered_ = true;
-        ASCEND_ASSERT(aclrtHostGetDevicePointer(addr_, &mappedAddr_, 0));
     }
 
     ~FftsMappedSharedHostCopyBuffer() override
@@ -310,9 +312,11 @@ public:
     FftsRankStripedMappedSharedHostCopyBuffer(
         std::vector<std::string> shmNames, size_t device, size_t size, size_t number,
         const std::function<void()>& setupBarrier,
-        const RankStripedSharedHostInitializer& initializer)
+        const RankStripedSharedHostInitializer& initializer,
+        CopyHostRegisterMode hostRegisterMode = CopyHostRegisterMode::V2)
         : CopyBuffer{device, size, number},
-          mappings_{std::move(shmNames), device, size, number, setupBarrier, true, initializer}
+          mappings_{std::move(shmNames), device, size,        number,
+                    setupBarrier,        true,   initializer, hostRegisterMode}
     {
         addr_ = mappings_.HostAt(0);
     }

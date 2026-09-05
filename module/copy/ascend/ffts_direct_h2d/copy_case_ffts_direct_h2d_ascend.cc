@@ -130,10 +130,10 @@ size_t FftsDirectStreamCount(const CopyCase::Context& ctx)
 std::string FftsDirectMethodName(const CopyCase::Context& ctx)
 {
     return "ffts-direct-h2d-" + std::to_string(FftsDirectStreamCount(ctx)) + "s" +
-           CopySubmitModeSuffix(ctx.submitMode) +
-           CopyStreamStartGateSuffix(ctx.streamStartGate) +
+           CopySubmitModeSuffix(ctx.submitMode) + CopyStreamStartGateSuffix(ctx.streamStartGate) +
            CopyStreamSyncModeSuffix(ctx.streamSyncMode) +
-           (ctx.ioMode == CopyIoMode::GLM51 ? "-GLM51" : "");
+           (ctx.ioMode == CopyIoMode::GLM51 ? "-GLM51" : "") +
+           CopyHostRegisterModeSuffix(ctx.hostRegisterMode);
 }
 
 }  // namespace
@@ -150,7 +150,8 @@ DEFINE_COPY_CASE_NO_RUNTIME(
         [&](size_t device, CopyIterationObserver* observer) {
             const auto bufferCount = FftsDirectBufferCount(ctx);
             const auto bufferSize = CopyIoBufferSize(ctx.ioMode, ctx.size);
-            FftsMappedHostCopyBuffer srcBuffer{device, bufferSize, bufferCount};
+            FftsMappedHostCopyBuffer srcBuffer{device, bufferSize, bufferCount,
+                                               ctx.hostRegisterMode};
             DeviceCopyBuffer dstBuffer{device, bufferSize, bufferCount};
             InitializeFftsDirectHostPatternedBuffer(srcBuffer);
             ResetFftsDirectDeviceBuffer(dstBuffer);
@@ -181,7 +182,8 @@ DEFINE_COPY_CASE_NO_RUNTIME(
         [&](size_t device, CopyIterationObserver* observer) {
             const auto bufferCount = FftsDirectBufferCount(ctx);
             const auto bufferSize = CopyIoBufferSize(ctx.ioMode, ctx.size);
-            FftsODirectMappedHostCopyBuffer srcBuffer{device, bufferSize, bufferCount};
+            FftsODirectMappedHostCopyBuffer srcBuffer{device, bufferSize, bufferCount,
+                                                      ctx.hostRegisterMode};
             DeviceCopyBuffer dstBuffer{device, bufferSize, bufferCount};
             InitializeFftsDirectHostPatternedBuffer(srcBuffer);
             ResetFftsDirectDeviceBuffer(dstBuffer);
@@ -214,9 +216,9 @@ DEFINE_COPY_CASE_NO_RUNTIME(
         ctx, ctx.ioMode == CopyIoMode::GLM51 ? "acl::shm::glm5.1" : srcRegion.Name(),
         "acl::device::all", FftsDirectMethodName(ctx),
         [&](size_t device, CopyIterationObserver* observer) {
-            FftsMappedSharedHostCopyBuffer srcBuffer{srcRegion.ShmName(),
-                                                    srcRegion.MappedBytes(), device, bufferSize,
-                                                    bufferCount};
+            FftsMappedSharedHostCopyBuffer srcBuffer{
+                srcRegion.ShmName(), srcRegion.MappedBytes(), device, bufferSize,
+                bufferCount,         ctx.hostRegisterMode};
             DeviceCopyBuffer dstBuffer{device, bufferSize, bufferCount};
             ResetFftsDirectDeviceBuffer(dstBuffer);
 
@@ -259,14 +261,17 @@ DEFINE_COPY_CASE_NO_RUNTIME(
         ctx,
         ctx.ioMode == CopyIoMode::GLM51 ? "acl::rank_striped_shm_mapped::glm5.1"
                                         : "acl::rank_striped_shm_mapped::all",
-        "acl::device::all",
-        FftsDirectMethodName(ctx) + "-RANK-STRIPED",
+        "acl::device::all", FftsDirectMethodName(ctx) + "-RANK-STRIPED",
         [&](size_t device, CopyIterationObserver* observer,
             ascend_copy::ForkProcessSync* processSync) {
             FftsRankStripedMappedSharedHostCopyBuffer srcBuffer{
-                srcSet.ShmNames(), device, bufferSize, bufferCount,
+                srcSet.ShmNames(),
+                device,
+                bufferSize,
+                bufferCount,
                 [processSync, device]() { processSync->SetupBarrier(device, 0); },
-                InitializeFftsDirectHostPatternedRange};
+                InitializeFftsDirectHostPatternedRange,
+                ctx.hostRegisterMode};
             DeviceCopyBuffer dstBuffer{device, bufferSize, bufferCount};
             ResetFftsDirectDeviceBuffer(dstBuffer);
 

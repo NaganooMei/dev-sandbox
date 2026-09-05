@@ -24,11 +24,11 @@
 #ifndef COPY_BUFFER_ASCEND_H
 #define COPY_BUFFER_ASCEND_H
 
-#include <chrono>
 #include <cerrno>
+#include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstdint>
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
@@ -42,6 +42,7 @@
 #include <vector>
 #include "copy_buffer.h"
 #include "error_handle_ascend.h"
+#include "host_register_ascend.h"
 
 #ifndef MFD_CLOEXEC
 #define MFD_CLOEXEC 0x0001U
@@ -542,10 +543,12 @@ using RankStripedSharedHostInitializer =
 
 class RankStripedSharedHostMappings {
 public:
-    RankStripedSharedHostMappings(
-        std::vector<std::string> shmNames, size_t device, size_t blockSize, size_t blockCount,
-        const std::function<void()>& setupBarrier, bool getMappedDevicePointers,
-        const RankStripedSharedHostInitializer& initializer = {})
+    RankStripedSharedHostMappings(std::vector<std::string> shmNames, size_t device,
+                                  size_t blockSize, size_t blockCount,
+                                  const std::function<void()>& setupBarrier,
+                                  bool getMappedDevicePointers,
+                                  const RankStripedSharedHostInitializer& initializer = {},
+                                  CopyHostRegisterMode hostRegisterMode = CopyHostRegisterMode::V2)
         : shmNames_{std::move(shmNames)},
           device_{device},
           blockSize_{blockSize},
@@ -579,13 +582,11 @@ public:
         }
 
         for (size_t segment = 0; segment < shmNames_.size(); ++segment) {
-            ASCEND_ASSERT(aclrtHostRegisterV2(hostBases_[segment], mappedSegmentBytes_,
-                                              ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED));
+            RegisterCopyHostBuffer(
+                hostBases_[segment], mappedSegmentBytes_, hostRegisterMode,
+                ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED,
+                getMappedDevicePointers_ ? &mappedDeviceBases_[segment] : nullptr);
             registered_[segment] = true;
-            if (getMappedDevicePointers_) {
-                ASCEND_ASSERT(aclrtHostGetDevicePointer(hostBases_[segment],
-                                                        &mappedDeviceBases_[segment], 0));
-            }
             if (CopyAscendBufferLogEnabled()) {
                 std::fprintf(stderr,
                              "[copy-buffer] rank-striped device=%zu segment=%zu owner=%d "
