@@ -22,6 +22,23 @@ void Reject(Function function)
 
 int main()
 {
+    // Decode the effective bits consumed by Linux get_nodes(maxnode - 1).
+    // This catches node 0 becoming an empty mask and truncation at word boundaries.
+    constexpr size_t bitsPerWord = sizeof(unsigned long) * 8;
+    for (const size_t node : {0, 1, 7, 31, 32, 63, 64, 127, 128}) {
+        const auto mask = shm_numa::SingleNodeMask(node);
+        const auto copiedBits = mask.maxNode - 1;
+        Require(copiedBits > node);
+        Require((copiedBits + bitsPerWord - 1) / bitsPerWord <= mask.words.size());
+        std::vector<size_t> decoded;
+        for (size_t bit = 0; bit < copiedBits; ++bit) {
+            if ((mask.words[bit / bitsPerWord] >> (bit % bitsPerWord)) & 1UL) {
+                decoded.push_back(bit);
+            }
+        }
+        Require(decoded == std::vector<size_t>{node});
+    }
+    Reject([]() { shm_numa::SingleNodeMask(65536); });
     const auto nodes = shm_numa::ParseNodes("0-7");
     Require(nodes == std::vector<size_t>({0, 1, 2, 3, 4, 5, 6, 7}));
     Require(shm_numa::ParseNodes("7,3-4,1") == std::vector<size_t>({7, 3, 4, 1}));

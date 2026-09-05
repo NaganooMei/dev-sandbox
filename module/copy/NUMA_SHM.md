@@ -30,6 +30,9 @@ df -h /dev/shm
 ./build/numa_shm --bytes 34359738368 --nodes 0-7 --hold-seconds 120
 ```
 
+首次验证也可以先用 `--bytes 8388608 --nodes 0-7 --hold-seconds 5`，每节点只分配
+1 MiB，确认绑定和逐页查询通过后再运行 32 GiB。
+
 要求所选 8 个节点都允许分配、各有足够空间容纳 4 GiB，并且 `/dev/shm` 和容器内存额度能容纳
 32 GiB。程序输出每区的实际页数和 `mismatches=0`，最后输出 `READY pid=...`。
 持有时间从验证完成后开始计算，正常退出或 READY 后按 Ctrl+C 会释放并删除本次 SHM。

@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace shm_numa {
@@ -50,6 +51,23 @@ struct Range {
     size_t bytes;
     size_t node;
 };
+
+struct NodeMask {
+    std::vector<unsigned long> words;
+    unsigned long maxNode;
+};
+
+inline NodeMask SingleNodeMask(size_t node)
+{
+    if (node > 65535) { throw std::invalid_argument("NUMA node ID exceeds 65535"); }
+    constexpr size_t bitsPerWord = sizeof(unsigned long) * 8;
+    std::vector<unsigned long> words(node / bitsPerWord + 1, 0);
+    words[node / bitsPerWord] = 1UL << (node % bitsPerWord);
+    // Linux get_nodes() decrements maxnode before copying/masking the bitmap.
+    // Pass the allocated bit capacity + 1 so even the last bit survives.
+    const auto maxNode = static_cast<unsigned long>(words.size() * bitsPerWord + 1);
+    return {std::move(words), maxNode};
+}
 
 inline std::vector<Range> Plan(size_t bytes, size_t pageSize, const std::vector<size_t>& nodes)
 {
@@ -140,13 +158,12 @@ inline void BindBeforeTouch(void* base, const std::vector<Range>& ranges, const 
     }
     for (const auto& range : ranges) {
         ValidateAllowedNodes({range.node});
-        constexpr size_t bitsPerWord = sizeof(unsigned long) * 8;
-        std::vector<unsigned long> mask(range.node / bitsPerWord + 1, 0);
-        mask[range.node / bitsPerWord] |= 1UL << (range.node % bitsPerWord);
+        const auto mask = SingleNodeMask(range.node);
         auto* address = static_cast<char*>(base) + range.offset;
         CheckSystemCall(syscall(SYS_mbind, address, range.bytes, MPOL_BIND | MPOL_F_STATIC_NODES,
-                                mask.data(), range.node + 1, 0UL),
-                        "mbind node=" + std::to_string(range.node) + " shm=" + name);
+                                mask.words.data(), mask.maxNode, 0UL),
+                        "mbind node=" + std::to_string(range.node) +
+                            " maxnode=" + std::to_string(mask.maxNode) + " shm=" + name);
         std::fprintf(stderr, "[shm-numa] bind shm=%s offset=%zu bytes=%zu node=%zu\n", name.c_str(),
                      range.offset, range.bytes, range.node);
     }
