@@ -221,13 +221,18 @@ private:
 
 class FftsMappedSharedHostRegion : public CopyBuffer {
 public:
-    FftsMappedSharedHostRegion(std::string tag, size_t device, size_t size, size_t number)
+    FftsMappedSharedHostRegion(std::string tag, size_t device, size_t size, size_t number,
+                               const std::vector<size_t>& numaNodes = {})
         : CopyBuffer{device, size, number}
     {
         const auto total = FftsDirectCheckedTotalBytes(size, number);
         mappedBytes_ = FftsDirectRoundUpToPageSize(total);
         shmName_ = "/copy_ascend_ffts_direct_" + std::to_string(getpid()) + "_" + tag + "_" +
                    std::to_string(reinterpret_cast<std::uintptr_t>(this));
+        if (!numaNodes.empty()) {
+            addr_ = shm_numa::Create(shmName_, mappedBytes_, 's', numaNodes);
+            return;
+        }
         const auto fd = shm_open(shmName_.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
         ASSERT(fd != -1);
         ASSERT(ftruncate(fd, mappedBytes_) == 0);
@@ -313,10 +318,11 @@ public:
         std::vector<std::string> shmNames, size_t device, size_t size, size_t number,
         const std::function<void()>& setupBarrier,
         const RankStripedSharedHostInitializer& initializer,
-        CopyHostRegisterMode hostRegisterMode = CopyHostRegisterMode::V2)
+        CopyHostRegisterMode hostRegisterMode = CopyHostRegisterMode::V2,
+        const std::vector<size_t>& numaNodes = {})
         : CopyBuffer{device, size, number},
-          mappings_{std::move(shmNames), device, size,        number,
-                    setupBarrier,        true,   initializer, hostRegisterMode}
+          mappings_{std::move(shmNames), device,           size,     number, setupBarrier, true,
+                    initializer,         hostRegisterMode, numaNodes}
     {
         addr_ = mappings_.HostAt(0);
     }

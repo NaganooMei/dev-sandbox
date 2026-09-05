@@ -48,6 +48,7 @@ public:
         size_t iter;
         size_t nDevice;
         CopyHostRegisterMode hostRegisterMode = CopyHostRegisterMode::V2;
+        std::vector<size_t> shmNumaNodes{};
     };
     CopyCase(std::string key, std::string brief) : key_{std::move(key)}, brief_{std::move(brief)} {}
     virtual ~CopyCase() = default;

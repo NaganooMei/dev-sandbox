@@ -43,6 +43,7 @@
 #include "copy_buffer.h"
 #include "error_handle_ascend.h"
 #include "host_register_ascend.h"
+#include "shm_numa.h"
 
 #ifndef MFD_CLOEXEC
 #define MFD_CLOEXEC 0x0001U
@@ -548,12 +549,14 @@ public:
                                   const std::function<void()>& setupBarrier,
                                   bool getMappedDevicePointers,
                                   const RankStripedSharedHostInitializer& initializer = {},
-                                  CopyHostRegisterMode hostRegisterMode = CopyHostRegisterMode::V2)
+                                  CopyHostRegisterMode hostRegisterMode = CopyHostRegisterMode::V2,
+                                  const std::vector<size_t>& numaNodes = {})
         : shmNames_{std::move(shmNames)},
           device_{device},
           blockSize_{blockSize},
           blockCount_{blockCount},
-          getMappedDevicePointers_{getMappedDevicePointers}
+          getMappedDevicePointers_{getMappedDevicePointers},
+          numaNodes_{numaNodes}
     {
         ASSERT(!shmNames_.empty());
         ASSERT(device_ < shmNames_.size());
@@ -569,7 +572,7 @@ public:
 
         ASCEND_ASSERT(aclrtSetDevice(device_));
         hostBases_[device_] = MapSegment(device_, true);
-        std::memset(hostBases_[device_], 's', mappedSegmentBytes_);
+        if (numaNodes_.empty()) { std::memset(hostBases_[device_], 's', mappedSegmentBytes_); }
         if (initializer) {
             initializer(hostBases_[device_], device_ * blocksPerSegment_, blocksPerSegment_,
                         blockSize_);
@@ -642,6 +645,10 @@ private:
 
     void* MapSegment(size_t segment, bool create) const
     {
+        if (create && !numaNodes_.empty()) {
+            return shm_numa::Create(shmNames_[segment], mappedSegmentBytes_, 's',
+                                    shm_numa::SegmentNodes(numaNodes_, shmNames_.size(), segment));
+        }
         const auto openFlags = create ? O_CREAT | O_EXCL | O_RDWR : O_RDWR;
         const auto fd = shm_open(shmNames_[segment].c_str(), openFlags, 0600);
         ASSERT(fd != -1);
@@ -662,6 +669,7 @@ private:
     size_t blocksPerSegment_ = 0;
     size_t mappedSegmentBytes_ = 0;
     bool getMappedDevicePointers_ = false;
+    std::vector<size_t> numaNodes_;
     std::vector<void*> hostBases_;
     std::vector<void*> mappedDeviceBases_;
     std::vector<bool> registered_;
@@ -669,11 +677,12 @@ private:
 
 class RankStripedSharedHostCopyBuffer : public CopyBuffer {
 public:
-    RankStripedSharedHostCopyBuffer(std::vector<std::string> shmNames, size_t device,
-                                    size_t size, size_t number,
-                                    const std::function<void()>& setupBarrier)
+    RankStripedSharedHostCopyBuffer(std::vector<std::string> shmNames, size_t device, size_t size,
+                                    size_t number, const std::function<void()>& setupBarrier,
+                                    const std::vector<size_t>& numaNodes = {})
         : CopyBuffer{device, size, number},
-          mappings_{std::move(shmNames), device, size, number, setupBarrier, false}
+          mappings_{std::move(shmNames),      device,   size, number, setupBarrier, false, {},
+                    CopyHostRegisterMode::V2, numaNodes}
     {
         addr_ = mappings_.HostAt(0);
     }
@@ -691,12 +700,17 @@ private:
 
 class SharedHostRegion : public CopyBuffer {
 public:
-    SharedHostRegion(std::string tag, size_t device, size_t size, size_t number)
+    SharedHostRegion(std::string tag, size_t device, size_t size, size_t number,
+                     const std::vector<size_t>& numaNodes = {})
         : CopyBuffer{device, size, number}
     {
         shmName_ = "/copy_ascend_" + std::to_string(getpid()) + "_" + tag + "_" +
                    std::to_string(reinterpret_cast<std::uintptr_t>(this));
         const auto total = size * number;
+        if (!numaNodes.empty()) {
+            addr_ = shm_numa::Create(shmName_, total, 's', numaNodes);
+            return;
+        }
         const auto fd = shm_open(shmName_.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
         ASSERT(fd != -1);
         ASSERT(ftruncate(fd, total) == 0);

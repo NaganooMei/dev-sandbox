@@ -308,7 +308,7 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     const auto bufferSize = CEMultiStreamBufferSize(ctx);
     CopyResult result;
     SharedHostRegion srcRegion{"one_share_host_to_all_device_ce_multi_stream", 0, bufferSize,
-                               ctx.num};
+                               ctx.num, ctx.shmNumaNodes};
     result.Push(ascend_copy::RunForkedCopyBatch(
         ctx, ctx.ioMode == CopyIoMode::GLM51 ? "acl::shm::glm5.1" : srcRegion.Name(),
         "acl::device::all", CEMultiStreamMethodName(ctx, true),
@@ -341,16 +341,17 @@ DEFINE_COPY_CASE_NO_RUNTIME(
 
     CopyResult result;
     result.Push(ascend_copy::RunForkedCopyBatchWithSync(
-        ctx,
-        ctx.ioMode == CopyIoMode::GLM51 ? "acl::rank_striped_shm::glm5.1"
-                                        : srcSet.Name(),
-        "acl::device::all",
-        CEMultiStreamMethodName(ctx, true) + "-RANK-STRIPED",
+        ctx, ctx.ioMode == CopyIoMode::GLM51 ? "acl::rank_striped_shm::glm5.1" : srcSet.Name(),
+        "acl::device::all", CEMultiStreamMethodName(ctx, true) + "-RANK-STRIPED",
         [&](size_t device, CopyIterationObserver* observer,
             ascend_copy::ForkProcessSync* processSync) {
             RankStripedSharedHostCopyBuffer srcBuffer{
-                srcSet.ShmNames(), device, bufferSize, ctx.num,
-                [processSync, device]() { processSync->SetupBarrier(device, 0); }};
+                srcSet.ShmNames(),
+                device,
+                bufferSize,
+                ctx.num,
+                [processSync, device]() { processSync->SetupBarrier(device, 0); },
+                ctx.shmNumaNodes};
             DeviceCopyBuffer dstBuffer{device, bufferSize, ctx.num};
             const auto taskOrderOffset = device * blocksPerSegment;
             H2DCEMultiStreamCopyInstance instance{

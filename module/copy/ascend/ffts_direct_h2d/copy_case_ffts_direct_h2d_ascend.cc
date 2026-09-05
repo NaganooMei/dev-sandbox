@@ -210,7 +210,7 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     const auto bufferCount = FftsDirectBufferCount(ctx);
     const auto bufferSize = CopyIoBufferSize(ctx.ioMode, ctx.size);
     FftsMappedSharedHostRegion srcRegion{"one_share_host_to_all_device_ffts_direct_h2d", 0,
-                                         bufferSize, bufferCount};
+                                         bufferSize, bufferCount, ctx.shmNumaNodes};
     InitializeFftsDirectHostPatternedBuffer(srcRegion);
     result.Push(ascend_copy::RunForkedCopyBatch(
         ctx, ctx.ioMode == CopyIoMode::GLM51 ? "acl::shm::glm5.1" : srcRegion.Name(),
@@ -271,7 +271,8 @@ DEFINE_COPY_CASE_NO_RUNTIME(
                 bufferCount,
                 [processSync, device]() { processSync->SetupBarrier(device, 0); },
                 InitializeFftsDirectHostPatternedRange,
-                ctx.hostRegisterMode};
+                ctx.hostRegisterMode,
+                ctx.shmNumaNodes};
             DeviceCopyBuffer dstBuffer{device, bufferSize, bufferCount};
             ResetFftsDirectDeviceBuffer(dstBuffer);
 

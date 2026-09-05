@@ -18,6 +18,7 @@ if(RUNTIME_BACKEND STREQUAL "CUDA")
         message(STATUS "Skipping copy GDR cases: libibverbs headers or library were not found")
     endif()
 elseif(RUNTIME_BACKEND STREQUAL "Ascend")
+    target_compile_definitions(copy PRIVATE COPY_HAS_ASCEND_SHM_NUMA=1)
     file(GLOB RUNTIME_SOURCE_FILES "ascend/*.cc" "ascend/*.h")
     find_package(Threads REQUIRED)
     target_link_libraries(copy PRIVATE Ascend::Runtime Threads::Threads)
@@ -39,3 +40,9 @@ else()
 endif()
 
 target_sources(copy PRIVATE ${RUNTIME_SOURCE_FILES})
+
+# Host-only NUMA placement probe: no ACL, NPU memory or libnuma dependency.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(numa_shm numa_shm_main.cc)
+    target_link_libraries(numa_shm PRIVATE rt)
+endif()

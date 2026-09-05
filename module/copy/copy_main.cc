@@ -26,6 +26,7 @@
 #include <unordered_set>
 #include "copy_case.h"
 #include "copy_runtime.h"
+#include "shm_numa.h"
 
 struct ArgsParser {
     std::unordered_set<std::string> names;
@@ -72,6 +73,12 @@ struct ArgsParser {
         fmt::println("  --host-register <mode>");
         fmt::println("                   v1 or v2 for FFTS Direct H2D host registration");
         fmt::println("                   (default: v2; does not affect CE or FFTS pipeline)");
+        fmt::println("  --shm-numa-nodes <list>");
+        fmt::println("                   Bind fresh SHM evenly to physical NUMA IDs, e.g. 0-7.");
+        fmt::println("                   Supported: Ascend CE multi-stream / FFTS Direct H2D,");
+        fmt::println("                   one_share and rank_striped cases only. Default: unset.");
+        fmt::println(
+            "                   Verifies every page before registration; errors are fatal.");
         fmt::println("  -i <count>       Iteration count (default: 128)");
         fmt::println("  -d <count>       Number of devices (default: 8)");
     }
@@ -183,6 +190,13 @@ struct ArgsParser {
                 ctx.streamSyncMode = ParseStreamSyncMode(argv[++i]);
             } else if (arg == "--host-register" && i + 1 < argc) {
                 ctx.hostRegisterMode = ParseHostRegisterMode(argv[++i]);
+            } else if (arg == "--shm-numa-nodes" && i + 1 < argc) {
+                try {
+                    ctx.shmNumaNodes = shm_numa::ParseNodes(argv[++i]);
+                } catch (const std::exception& error) {
+                    fmt::println("Invalid --shm-numa-nodes: {}", error.what());
+                    std::exit(EXIT_FAILURE);
+                }
             } else if (arg == "-i" && i + 1 < argc) {
                 ctx.iter = ParseUnsigned(argv[++i], "Invalid iteration count.");
             } else if (arg == "-d" && i + 1 < argc) {
@@ -213,12 +227,43 @@ int main(int argc, char const* argv[])
         }
         return -1;
     }
+    if (!args.ctx.shmNumaNodes.empty()) {
+#ifdef COPY_HAS_ASCEND_SHM_NUMA
+        const std::unordered_set<std::string> supported{
+            "one_share_host_to_all_device_ce_multi_stream",
+            "rank_striped_host_to_all_device_ce_multi_stream",
+            "one_share_host_to_all_device_ffts_direct_h2d",
+            "rank_striped_host_to_all_device_ffts_direct_h2d"};
+        for (const auto& name : args.names) {
+            if (supported.count(name) == 0) {
+                fmt::println("--shm-numa-nodes is unsupported for case {}", name);
+                return EXIT_FAILURE;
+            }
+            if (name.compare(0, 13, "rank_striped_") == 0) {
+                try {
+                    shm_numa::SegmentNodes(args.ctx.shmNumaNodes, args.ctx.nDevice, 0);
+                } catch (const std::exception& error) {
+                    fmt::println("{}", error.what());
+                    return EXIT_FAILURE;
+                }
+            }
+        }
+#else
+        fmt::println("--shm-numa-nodes requires the Ascend backend");
+        return EXIT_FAILURE;
+#endif
+    }
     for (auto& c : cases) {
-        if (c->RequiresRuntimeInitialization()) {
-            CopyRuntime runtime;
-            c->Run(args.ctx);
-        } else {
-            c->Run(args.ctx);
+        try {
+            if (c->RequiresRuntimeInitialization()) {
+                CopyRuntime runtime;
+                c->Run(args.ctx);
+            } else {
+                c->Run(args.ctx);
+            }
+        } catch (const std::exception& error) {
+            fmt::println(stderr, "Case {} failed: {}", c->Key(), error.what());
+            return EXIT_FAILURE;
         }
     }
     return 0;
