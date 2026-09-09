@@ -439,8 +439,8 @@ inline bool ReadResult(int fd, CopyResult::Result& result)
     std::_Exit(status);
 }
 
-inline std::vector<size_t> MergeMaxCosts(const std::vector<CopyResult::Result>& results,
-                                         bool submit)
+inline std::vector<size_t> MergeAverageCosts(const std::vector<CopyResult::Result>& results,
+                                             bool submit)
 {
     ASSERT(!results.empty());
     const auto& first = submit ? results.front().submitCosts : results.front().copyCosts;
@@ -449,9 +449,31 @@ inline std::vector<size_t> MergeMaxCosts(const std::vector<CopyResult::Result>& 
         const auto& costs = submit ? result.submitCosts : result.copyCosts;
         ASSERT(costs.size() == merged.size());
         for (size_t i = 0; i < costs.size(); ++i) {
-            merged[i] = std::max(merged[i], costs[i]);
+            merged[i] += costs[i];
         }
     }
+    for (auto& cost : merged) { cost /= results.size(); }
+    return merged;
+}
+
+inline CopyResult::Statistics MergeAverageStatistics(
+    const std::vector<CopyResult::Result>& results, bool submit)
+{
+    ASSERT(!results.empty());
+    CopyResult::Statistics merged;
+    for (const auto& result : results) {
+        const auto& statistics = submit ? result.submit : result.copy;
+        merged.min += statistics.min;
+        merged.max += statistics.max;
+        merged.avg += statistics.avg;
+        merged.p50 += statistics.p50;
+        merged.p90 += statistics.p90;
+    }
+    merged.min /= results.size();
+    merged.max /= results.size();
+    merged.avg /= results.size();
+    merged.p50 /= results.size();
+    merged.p90 /= results.size();
     return merged;
 }
 
@@ -466,13 +488,18 @@ inline CopyResult::Result MergeForkedResults(std::vector<CopyResult::Result>&& r
         totalCount += result.count;
     }
 
-    return {std::move(srcName),
-            std::move(dstName),
-            std::move(methodName),
-            results.front().size,
-            totalCount,
-            MergeMaxCosts(results, true),
-            MergeMaxCosts(results, false)};
+    const auto submit = MergeAverageStatistics(results, true);
+    const auto copy = MergeAverageStatistics(results, false);
+    CopyResult::Result merged{std::move(srcName),
+                              std::move(dstName),
+                              std::move(methodName),
+                              results.front().size,
+                              totalCount,
+                              MergeAverageCosts(results, true),
+                              MergeAverageCosts(results, false)};
+    merged.submit = submit;
+    merged.copy = copy;
+    return merged;
 }
 
 inline std::vector<CopyResult::Result> RunForkedCopyBatchPerDeviceWithSync(
