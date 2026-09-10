@@ -43,8 +43,9 @@ if [[ "${DRY_RUN}" != "1" && ! -x "${COPY_BIN}" ]]; then
 fi
 
 if [[ "${DRY_RUN}" != "1" ]]; then
-    available_cases=$("${COPY_BIN}" 2>&1 || true)
-    if ! grep -q "${SDMA_CASE}" <<<"${available_cases}"; then
+    # A non-empty unmatched -t makes copy print every registered case.
+    available_cases=$("${COPY_BIN}" -t __case_registration_probe__ 2>&1 || true)
+    if ! grep -Fq "${SDMA_CASE}" <<<"${available_cases}"; then
         echo "SDMA case is missing from ${COPY_BIN}: ${SDMA_CASE}" >&2
         echo "reconfigure the existing build with the A3 CANN FFTS headers/runtime, then rebuild" >&2
         exit 1
