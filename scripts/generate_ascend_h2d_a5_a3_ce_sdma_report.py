@@ -182,6 +182,8 @@ def build_report(rows_by_group: dict[str, list[dict[str, object]]]) -> str:
 | Atlas A3 标准 CE | `{GROUPS['a3_ce']['case']}` | `{GROUPS['a3_ce']['run']}` |
 | Atlas A3 SDMA Direct | `{GROUPS['a3_sdma']['case']}` | `{GROUPS['a3_sdma']['run']}` |
 
+这里的 All Host 指每张卡各自分配一块 Host Buffer：每个设备进程先调用 `aclrtSetDevice(device)`，再调用 `aclrtMallocHost`，不是所有卡共享同一块 Host 内存。随后每张卡使用自己的 Host Buffer 向自己的 Device Buffer 执行 H2D 拷贝；SDMA Direct 的 Host Buffer 在此基础上额外做 mapped 注册。
+
 - IO 模式：GLM5.1、1 MiB 大 IO。
 - 卡数：1、4、8。
 - 每卡 Streams：1、4、16。

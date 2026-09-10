@@ -10,6 +10,8 @@
 | Atlas A3 标准 CE | `all_host_to_all_device_ce_multi_stream` | `20260912_095638` |
 | Atlas A3 SDMA Direct | `all_host_to_all_device_ffts_direct_h2d` | `20260912_095638` |
 
+这里的 All Host 指每张卡各自分配一块 Host Buffer：每个设备进程先调用 `aclrtSetDevice(device)`，再调用 `aclrtMallocHost`，不是所有卡共享同一块 Host 内存。随后每张卡使用自己的 Host Buffer 向自己的 Device Buffer 执行 H2D 拷贝；SDMA Direct 的 Host Buffer 在此基础上额外做 mapped 注册。
+
 - IO 模式：GLM5.1、1 MiB 大 IO。
 - 卡数：1、4、8。
 - 每卡 Streams：1、4、16。
