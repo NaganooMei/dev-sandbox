@@ -1,0 +1,15 @@
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(STATUS "Skipping memfd_register: Linux is required")
+    return()
+endif()
+
+add_executable(memfd_register memfd_register_main.cc)
+target_include_directories(memfd_register PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../copy)
+target_link_libraries(memfd_register PRIVATE fmt::fmt)
+
+if(RUNTIME_BACKEND STREQUAL "Ascend")
+    target_compile_definitions(memfd_register PRIVATE MEMFD_REGISTER_HAS_ASCEND=1)
+    target_link_libraries(memfd_register PRIVATE Ascend::Runtime)
+else()
+    message(STATUS "memfd_register will build without ACL support")
+endif()
