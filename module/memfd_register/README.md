@@ -38,11 +38,28 @@ cmake --build build -j --target memfd_register
 # Compare with 8 ranks. The total registered by each rank remains 256 GiB.
 ./build/module/memfd_register/memfd_register \
   --ranks 8 --total-size 256G --numa-nodes 0-7
+
+# Register one complete 256 GiB device context at a time. Earlier successful
+# contexts stay registered while the next rank runs, exposing the stable global limit.
+./build/module/memfd_register/memfd_register \
+  --ranks 8 --total-size 256G --numa-nodes 0-7 \
+  --registration-mode serial
 ```
 
 `--numa-nodes` is optional. When omitted, the tool uses the intersection of online, memory-bearing,
 and process-allowed NUMA nodes. Rank placement follows Cache2's fallback formula
 `rank * node_count / rank_count`. `--device-offset` defaults to zero.
+
+`--registration-mode concurrent` matches the normal Cache2 startup race. In `serial` mode all
+segments are created, placed, touched, and exchanged first; rank 0 then registers all segments and
+keeps them registered while rank 1 runs, followed by the remaining ranks. Registrations are released
+only after the first failure or after every rank succeeds. This separates the stable global
+registration capacity from transient contention.
+
+The tool prints `first_touch` progress every 16 GiB before registration begins. With `--ranks 1`,
+the complete `--total-size` is bound to one NUMA node, so a 256 GiB run can spend a long time in
+page faults/reclaim or exhaust that node even when the machine has enough aggregate memory. Use
+multiple ranks to reproduce Cache2's rank-sliced NUMA layout.
 
 Each registration line contains the segment rank, role, bytes successfully registered so far,
 return code, and elapsed time. A failure around the same `registered_bytes` for 8 and 16 ranks is

@@ -49,6 +49,13 @@ enum class MessageKind : std::uint32_t {
     PeerFd = 2,
     Abort = 3,
     Done = 4,
+    Start = 5,
+    Release = 6,
+};
+
+enum class RegistrationMode {
+    Concurrent,
+    Serial,
 };
 
 struct Message {
@@ -66,6 +73,7 @@ struct Options {
     size_t deviceOffset{0};
     size_t timeoutSeconds{600};
     std::optional<std::vector<size_t>> numaNodes{};
+    RegistrationMode registrationMode{RegistrationMode::Concurrent};
 };
 
 struct Segment {
@@ -149,6 +157,7 @@ void PrintHelp(const char* program)
         "Options:\n"
         "  --device-offset N     Device ID of rank 0 (default: 0)\n"
         "  --numa-nodes LIST     Ordered NUMA IDs, e.g. 0-7 (default: auto)\n"
+        "  --registration-mode M concurrent or serial (default: concurrent)\n"
         "  --timeout-seconds N   IPC/setup timeout (default: 600)\n"
         "  -h, --help            Show this help\n",
         program);
@@ -183,6 +192,14 @@ Options ParseOptions(int argc, char** argv)
             options.deviceOffset = static_cast<size_t>(ParseUnsigned(value, option));
         } else if (option == "--numa-nodes") {
             options.numaNodes = shm_numa::ParseNodes(value);
+        } else if (option == "--registration-mode") {
+            if (value == "concurrent") {
+                options.registrationMode = RegistrationMode::Concurrent;
+            } else if (value == "serial") {
+                options.registrationMode = RegistrationMode::Serial;
+            } else {
+                throw std::invalid_argument("--registration-mode must be concurrent or serial");
+            }
         } else if (option == "--timeout-seconds") {
             options.timeoutSeconds = static_cast<size_t>(ParseUnsigned(value, option));
         } else {
@@ -253,6 +270,11 @@ std::string JoinNodes(const std::vector<size_t>& nodes)
         result += std::to_string(node);
     }
     return result;
+}
+
+const char* RegistrationModeName(RegistrationMode mode)
+{
+    return mode == RegistrationMode::Serial ? "serial" : "concurrent";
 }
 
 bool SendMessage(int socket, const Message& message, int fd = -1)
@@ -333,8 +355,25 @@ std::int64_t CreateLocalSegment(size_t rank, size_t bytes, size_t numaNode, Segm
         return errno == 0 ? -EIO : -errno;
     }
     const auto pageSize = shm_numa::PageSize();
+    constexpr size_t kProgressBytes = 16ULL * 1024 * 1024 * 1024;
     auto* base = static_cast<volatile unsigned char*>(segment.address);
-    for (size_t offset = 0; offset < bytes; offset += pageSize) { base[offset] = 0; }
+    size_t nextProgress = std::min(bytes, kProgressBytes);
+    const auto touchStart = Clock::now();
+    Log(false, "first_touch owner={} numa={} bytes={} status=start", rank, numaNode, bytes);
+    for (size_t offset = 0; offset < bytes; offset += pageSize) {
+        base[offset] = 0;
+        const auto touched = std::min(bytes, offset + pageSize);
+        if (touched < nextProgress) { continue; }
+        const auto elapsed =
+            std::chrono::duration<double, std::milli>(Clock::now() - touchStart).count();
+        Log(false, "first_touch owner={} numa={} touched_bytes={} total_bytes={} cost_ms={:.3f}",
+            rank, numaNode, touched, bytes, elapsed);
+        if (nextProgress >= bytes || bytes - nextProgress <= kProgressBytes) {
+            nextProgress = bytes;
+        } else {
+            nextProgress += kProgressBytes;
+        }
+    }
     return 0;
 }
 
@@ -419,12 +458,33 @@ void CleanupSegments(int32_t device, size_t bytes, std::vector<Segment>& segment
 #endif
 }
 
+std::int64_t RegisterAndLog(size_t owner, int32_t device, size_t segmentRank, size_t rankBytes,
+                            const std::vector<size_t>& rankNodes, std::vector<Segment>& segments,
+                            std::uint64_t& registeredSegments, std::uint64_t& registeredBytes)
+{
+    const auto start = Clock::now();
+    const auto status = RegisterSegment(device, rankBytes, segments[segmentRank]);
+    const auto elapsed = std::chrono::duration<double, std::milli>(Clock::now() - start);
+    if (status == 0) {
+        ++registeredSegments;
+        registeredBytes += rankBytes;
+    }
+    Log(status != 0,
+        "register owner={} device={} segment={} role={} numa={} bytes={} "
+        "registered_segments={} registered_bytes={} status={} cost_ms={:.3f} error={}",
+        owner, device, segmentRank, segmentRank == owner ? "local" : "peer", rankNodes[segmentRank],
+        rankBytes, registeredSegments, registeredBytes, status, elapsed.count(),
+        status == 0 ? "" : StatusDetail(status));
+    return status;
+}
+
 [[noreturn]] void RunChild(size_t rank, const Options& options, size_t rankBytes,
                            const std::vector<size_t>& rankNodes, int socket)
 {
     const auto device = static_cast<int32_t>(options.deviceOffset + rank);
     const auto numaNode = rankNodes[rank];
     const int timeoutMs = static_cast<int>(options.timeoutSeconds * 1000);
+    const bool serial = options.registrationMode == RegistrationMode::Serial;
     std::vector<Segment> segments(options.ranks);
     bool runtimeInitialized = false;
     std::int64_t status = InitRuntime();
@@ -432,22 +492,12 @@ void CleanupSegments(int32_t device, size_t bytes, std::vector<Segment>& segment
     if (status == 0) { status = CreateLocalSegment(rank, rankBytes, numaNode, segments[rank]); }
     std::uint64_t registeredSegments = 0;
     std::uint64_t registeredBytes = 0;
-    if (status == 0) {
-        const auto start = Clock::now();
-        status = RegisterSegment(device, rankBytes, segments[rank]);
-        const auto elapsed = std::chrono::duration<double, std::milli>(Clock::now() - start);
-        if (status == 0) {
-            ++registeredSegments;
-            registeredBytes += rankBytes;
-        }
-        Log(status != 0,
-            "register owner={} device={} segment={} role=local numa={} bytes={} "
-            "registered_segments={} registered_bytes={} status={} cost_ms={:.3f} error={}",
-            rank, device, rank, numaNode, rankBytes, registeredSegments, registeredBytes, status,
-            elapsed.count(), status == 0 ? "" : StatusDetail(status));
-    } else {
+    if (status != 0) {
         Log(true, "local setup failed: owner={} device={} numa={} status={} error={}", rank, device,
             numaNode, status, StatusDetail(status));
+    } else if (!serial) {
+        status = RegisterAndLog(rank, device, rank, rankBytes, rankNodes, segments,
+                                registeredSegments, registeredBytes);
     }
 
     Message local{kWireMagic, MessageKind::LocalReady, static_cast<std::uint32_t>(rank),
@@ -484,19 +534,11 @@ void CleanupSegments(int32_t device, size_t bytes, std::vector<Segment>& segment
                     peerRank, status);
                 break;
             }
-            const auto start = Clock::now();
-            status = RegisterSegment(device, rankBytes, segments[peerRank]);
-            const auto elapsed = std::chrono::duration<double, std::milli>(Clock::now() - start);
-            if (status == 0) {
-                ++registeredSegments;
-                registeredBytes += rankBytes;
+            if (!serial) {
+                status = RegisterAndLog(rank, device, peerRank, rankBytes, rankNodes, segments,
+                                        registeredSegments, registeredBytes);
+                if (status != 0) { break; }
             }
-            Log(status != 0,
-                "register owner={} device={} segment={} role=peer numa={} bytes={} "
-                "registered_segments={} registered_bytes={} status={} cost_ms={:.3f} error={}",
-                rank, device, peerRank, rankNodes[peerRank], rankBytes, registeredSegments,
-                registeredBytes, status, elapsed.count(), status == 0 ? "" : StatusDetail(status));
-            if (status != 0) { break; }
         }
     } else {
         /* Earlier peer descriptors may already be queued before the parent reaches this
@@ -510,9 +552,44 @@ void CleanupSegments(int32_t device, size_t bytes, std::vector<Segment>& segment
         }
     }
 
+    bool serialStarted = false;
+    if (serial && status == 0) {
+        Message command;
+        int unexpectedFd = -1;
+        if (!ReceiveMessage(socket, command, unexpectedFd, timeoutMs)) {
+            status = -ETIMEDOUT;
+        } else if (unexpectedFd >= 0) {
+            ::close(unexpectedFd);
+            status = -EPROTO;
+        } else if (command.kind != MessageKind::Start) {
+            status = command.status == 0 ? -ECANCELED : command.status;
+        } else {
+            serialStarted = true;
+            Log(false, "serial_start owner={} device={}", rank, device);
+            status = RegisterAndLog(rank, device, rank, rankBytes, rankNodes, segments,
+                                    registeredSegments, registeredBytes);
+            for (size_t peerRank = 0; status == 0 && peerRank < options.ranks; ++peerRank) {
+                if (peerRank == rank) { continue; }
+                status = RegisterAndLog(rank, device, peerRank, rankBytes, rankNodes, segments,
+                                        registeredSegments, registeredBytes);
+            }
+        }
+    }
+
     Message done{kWireMagic, MessageKind::Done,  static_cast<std::uint32_t>(rank),
                  status,     registeredSegments, registeredBytes};
     (void)SendMessage(socket, done);
+    if (serialStarted) {
+        Message release;
+        int unexpectedFd = -1;
+        const bool received = ReceiveMessage(socket, release, unexpectedFd, timeoutMs);
+        if (unexpectedFd >= 0) { ::close(unexpectedFd); }
+        if (!received || release.kind != MessageKind::Release || unexpectedFd >= 0) {
+            Log(true, "serial release failed: owner={} device={}", rank, device);
+        } else {
+            Log(false, "serial_release owner={} device={}", rank, device);
+        }
+    }
     CleanupSegments(device, rankBytes, segments, runtimeInitialized);
     ::close(socket);
     std::_Exit(status == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
@@ -607,9 +684,9 @@ int RunParent(const Options& options, size_t rankBytes, const std::vector<size_t
         ::close(fd);
     }
 
-    size_t passed = 0;
     std::vector<Message> results(options.ranks);
-    for (size_t rank = 0; rank < options.ranks; ++rank) {
+    std::vector<bool> resultReady(options.ranks, false);
+    const auto receiveDone = [&](size_t rank) {
         int fd = -1;
         if (!ReceiveMessage(channels[rank].parent, results[rank], fd, timeoutMs) ||
             results[rank].kind != MessageKind::Done || results[rank].rank != rank) {
@@ -617,7 +694,30 @@ int RunParent(const Options& options, size_t rankBytes, const std::vector<size_t
                 kWireMagic, MessageKind::Done, static_cast<std::uint32_t>(rank), -ETIMEDOUT, 0, 0};
         }
         if (fd >= 0) { ::close(fd); }
-        if (results[rank].status == 0) { ++passed; }
+        resultReady[rank] = true;
+    };
+
+    if (options.registrationMode == RegistrationMode::Serial && setupSuccess) {
+        for (size_t rank = 0; rank < options.ranks; ++rank) {
+            const Message start{
+                kWireMagic, MessageKind::Start, static_cast<std::uint32_t>(rank), 0, 0, 0};
+            Log(false, "SERIAL dispatch rank={} device={}", rank, options.deviceOffset + rank);
+            if (!SendMessage(channels[rank].parent, start)) {
+                results[rank] = Message{
+                    kWireMagic, MessageKind::Done, static_cast<std::uint32_t>(rank), -EPIPE, 0, 0};
+                resultReady[rank] = true;
+                break;
+            }
+            receiveDone(rank);
+            if (results[rank].status != 0) { break; }
+        }
+        /* Successful earlier ranks keep all registrations until this point. Release them only
+         * after the first failure, or after every rank completed successfully. */
+        const Message release{kWireMagic, MessageKind::Release, 0, 0, 0, 0};
+        for (const auto& channel : channels) { (void)SendMessage(channel.parent, release); }
+    }
+    for (size_t rank = 0; rank < options.ranks; ++rank) {
+        if (!resultReady[rank]) { receiveDone(rank); }
     }
 
     CloseChannels(channels);
@@ -626,7 +726,9 @@ int RunParent(const Options& options, size_t rankBytes, const std::vector<size_t
         int childStatus = 0;
         while (::waitpid(pid, &childStatus, 0) < 0 && errno == EINTR) {}
     }
+    size_t passed = 0;
     for (const auto& result : results) {
+        if (result.status == 0) { ++passed; }
         Log(result.status != 0,
             "SUMMARY rank={} device={} status={} registered_segments={} registered_bytes={}",
             result.rank, options.deviceOffset + result.rank, result.status,
@@ -673,10 +775,12 @@ int main(int argc, char** argv)
         }
         Log(false,
             "PLAN ranks={} total_bytes={} requested_rank_bytes={} rank_stride={} "
-            "mapped_total_bytes={} device_offset={} numa_nodes={} timeout_seconds={}",
+            "mapped_total_bytes={} device_offset={} numa_nodes={} registration_mode={} "
+            "timeout_seconds={}",
             options.ranks, options.totalBytes, requestedRankBytes, rankBytes,
             static_cast<std::uint64_t>(rankBytes) * options.ranks, options.deviceOffset,
-            JoinNodes(nodes), options.timeoutSeconds);
+            JoinNodes(nodes), RegistrationModeName(options.registrationMode),
+            options.timeoutSeconds);
         for (size_t rank = 0; rank < options.ranks; ++rank) {
             Log(false, "PLAN rank={} device={} numa={}", rank, options.deviceOffset + rank,
                 rankNodes[rank]);
