@@ -74,24 +74,93 @@ the fd reports `HUGETLBFS_MAGIC`, the filesystem block size is 2 MiB, `/proc/sel
 the `ht` VM flag, and the complete segment is accounted in `Shared_Hugetlb + Private_Hugetlb`.
 The run stops if any check fails. A successful mapping prints `hugetlb verified`.
 
-Inspect the configured global and per-NUMA pools before running:
+## Run the 256 GiB HugeTLB experiment
+
+The following writes change the host-wide HugeTLB pool, including when they are issued from a
+privileged container with writable host sysfs. Use a dedicated idle node and make sure no other
+workload owns HugeTLB pages. The experiment needs 131072 2 MiB pages in total: each of the eight
+32 GiB rank segments needs 16384 pages on its target NUMA node.
+
+First inspect the current global and per-NUMA pools:
 
 ```bash
 grep -E 'HugePages|Hugepagesize|Hugetlb' /proc/meminfo
 
-for path in /sys/kernel/mm/hugepages/hugepages-*; do
-  echo "== $path =="
-  grep . "$path"/{nr_hugepages,free_hugepages,resv_hugepages,surplus_hugepages}
-done
-
-for path in /sys/devices/system/node/node*/hugepages/hugepages-*; do
-  echo "== $path =="
-  grep . "$path"/{nr_hugepages,free_hugepages,surplus_hugepages}
+for node in {0..7}; do
+  path=/sys/devices/system/node/node${node}/hugepages/hugepages-2048kB
+  printf 'node%s total=' "$node"
+  cat "$path/nr_hugepages"
+  printf 'node%s free=' "$node"
+  cat "$path/free_hugepages"
 done
 ```
 
-For 256 GiB backed by 2 MiB pages, the machine needs 131072 pages in total. With eight 32 GiB
-rank segments placed on eight NUMA nodes, each target node needs 16384 free 2 MiB pages.
+Save the current per-node targets, then reserve 16384 pages on each node. Writing
+`nr_hugepages` sets the target count rather than adding to it.
+
+```bash
+snapshot=/tmp/memfd_register_hugepages.before
+: > "$snapshot"
+for node in {0..7}; do
+  path=/sys/devices/system/node/node${node}/hugepages/hugepages-2048kB
+  printf '%s %s\n' "$node" "$(cat "$path/nr_hugepages")" >> "$snapshot"
+  echo 16384 > "$path/nr_hugepages"
+done
+```
+
+Always verify the values actually obtained: runtime reservation may return fewer pages because of
+memory pressure or fragmentation. Do not start the test unless every node reports at least 16384
+total and free pages and the global total is at least 131072.
+
+```bash
+grep -E 'HugePages|Hugepagesize|Hugetlb' /proc/meminfo
+
+for node in {0..7}; do
+  path=/sys/devices/system/node/node${node}/hugepages/hugepages-2048kB
+  total=$(cat "$path/nr_hugepages")
+  free=$(cat "$path/free_hugepages")
+  printf 'node%s total=%s free=%s\n' "$node" "$total" "$free"
+  test "$total" -ge 16384 && test "$free" -ge 16384 || exit 1
+done
+```
+
+Build and run the full serial experiment:
+
+```bash
+cmake -S . -B build -DASCEND_ROOT=/usr/local/Ascend/ascend-toolkit/latest
+cmake --build build -j --target memfd_register
+
+./build/module/memfd_register/memfd_register \
+  --ranks 8 \
+  --total-size 256G \
+  --numa-nodes 0-7 \
+  --registration-mode serial \
+  --page-mode hugetlb-2m \
+  --timeout-seconds 1200
+```
+
+Every owner must print a line equivalent to the following before registration starts. The run fails
+instead of silently falling back when the backing does not satisfy all HugeTLB checks.
+
+```text
+page_backing owner=0 mode=hugetlb-2m fs_magic=0x958458f6 fs_block_bytes=2097152 \
+kernel_page_kb=2048 ... private_hugetlb_kb=33554432 ... vm_flags=... ht ...
+hugetlb verified: owner=0 page_bytes=2097152 backed_bytes=34359738368
+```
+
+After the process exits, all 131072 pages should be free again. Restore the targets recorded before
+the experiment only after confirming that no test process still maps them:
+
+```bash
+grep -E 'HugePages|Hugepagesize|Hugetlb' /proc/meminfo
+
+while read -r node count; do
+  path=/sys/devices/system/node/node${node}/hugepages/hugepages-2048kB
+  echo "$count" > "$path/nr_hugepages"
+done < /tmp/memfd_register_hugepages.before
+
+grep -E 'HugePages|Hugepagesize|Hugetlb' /proc/meminfo
+```
 
 Each registration line contains the segment rank, role, bytes successfully registered so far,
 return code, and elapsed time. A failure around the same `registered_bytes` for 8 and 16 ranks is
