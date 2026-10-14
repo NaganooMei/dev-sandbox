@@ -81,7 +81,15 @@ privileged container with writable host sysfs. Use a dedicated idle node and mak
 workload owns HugeTLB pages. The experiment needs 131072 2 MiB pages in total: each of the eight
 32 GiB rank segments needs 16384 pages on its target NUMA node.
 
-First inspect the current global and per-NUMA pools:
+Reserve 16384 pages on each NUMA node:
+
+```bash
+for node in {0..7}; do
+  echo 16384 > /sys/devices/system/node/node${node}/hugepages/hugepages-2048kB/nr_hugepages
+done
+```
+
+Check the actual result:
 
 ```bash
 grep -E 'HugePages|Hugepagesize|Hugetlb' /proc/meminfo
@@ -95,68 +103,9 @@ for node in {0..7}; do
 done
 ```
 
-Save the current per-node targets, then reserve 16384 pages on each node. Writing
-`nr_hugepages` sets the target count rather than adding to it.
-
-```bash
-snapshot=/tmp/memfd_register_hugepages.before
-: > "$snapshot"
-for node in {0..7}; do
-  path=/sys/devices/system/node/node${node}/hugepages/hugepages-2048kB
-  printf '%s %s\n' "$node" "$(cat "$path/nr_hugepages")" >> "$snapshot"
-  echo 16384 > "$path/nr_hugepages"
-done
-```
-
-Always verify the values actually obtained: runtime reservation may return fewer pages because of
-memory pressure or fragmentation. Do not start the test unless every node reports at least 16384
-total and free pages and the global total is at least 131072.
-
-```bash
-grep -E 'HugePages|Hugepagesize|Hugetlb' /proc/meminfo
-
-required_per_node=16384
-huge_ready=1
-for node in {0..7}; do
-  path=/sys/devices/system/node/node${node}/hugepages/hugepages-2048kB
-  total=$(cat "$path/nr_hugepages")
-  free=$(cat "$path/free_hugepages")
-  if [ "$total" -ge "$required_per_node" ] && [ "$free" -ge "$required_per_node" ]; then
-    printf 'node%s total=%s free=%s READY\n' "$node" "$total" "$free"
-  else
-    available=$total
-    [ "$free" -lt "$available" ] && available=$free
-    missing=$((required_per_node - available))
-    [ "$missing" -lt 0 ] && missing=0
-    printf 'node%s total=%s free=%s INSUFFICIENT missing=%s_pages=%s_MiB\n' \
-      "$node" "$total" "$free" "$missing" "$((missing * 2))"
-    huge_ready=0
-  fi
-done
-
-global_total=$(awk '$1 == "HugePages_Total:" {print $2}' /proc/meminfo)
-global_free=$(awk '$1 == "HugePages_Free:" {print $2}' /proc/meminfo)
-if [ "$huge_ready" -eq 1 ] && [ "$global_total" -ge 131072 ] && [ "$global_free" -ge 131072 ]; then
-  echo 'HUGETLB READY: safe to start the 256 GiB test'
-else
-  echo 'HUGETLB INSUFFICIENT: do not start the 256 GiB test'
-fi
-```
-
-If a node is short, inspect its normal-memory pressure and high-order free blocks. On a dedicated
-idle machine, a global compaction followed by a retry may recover fragmented 2 MiB blocks. Global
-compaction can disturb running workloads, so do not run it on a busy service node.
-
-```bash
-grep -E 'MemTotal|MemFree|MemUsed|AnonPages|FilePages|HugePages' \
-  /sys/devices/system/node/node7/meminfo
-grep '^Node 7' /proc/buddyinfo
-
-# Dedicated idle machine only.
-echo 1 > /proc/sys/vm/compact_memory
-echo 16384 > \
-  /sys/devices/system/node/node7/hugepages/hugepages-2048kB/nr_hugepages
-```
+Do not start the test unless every node reports `total=16384 free=16384` and the global total and
+free counts are both 131072. A smaller value means that the kernel could reserve only part of the
+request because of memory pressure or fragmentation.
 
 Build and run the full serial experiment:
 
@@ -182,16 +131,13 @@ kernel_page_kb=2048 ... private_hugetlb_kb=33554432 ... vm_flags=... ht ...
 hugetlb verified: owner=0 page_bytes=2097152 backed_bytes=34359738368
 ```
 
-After the process exits, all 131072 pages should be free again. Restore the targets recorded before
-the experiment only after confirming that no test process still maps them:
+After the process exits, all 131072 pages should be free again. To return the pool to zero, run the
+following; replace `0` with the previous per-node target when the machine already had HugeTLB pages:
 
 ```bash
-grep -E 'HugePages|Hugepagesize|Hugetlb' /proc/meminfo
-
-while read -r node count; do
-  path=/sys/devices/system/node/node${node}/hugepages/hugepages-2048kB
-  echo "$count" > "$path/nr_hugepages"
-done < /tmp/memfd_register_hugepages.before
+for node in {0..7}; do
+  echo 0 > /sys/devices/system/node/node${node}/hugepages/hugepages-2048kB/nr_hugepages
+done
 
 grep -E 'HugePages|Hugepagesize|Hugetlb' /proc/meminfo
 ```
