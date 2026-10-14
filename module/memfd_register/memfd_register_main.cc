@@ -10,26 +10,41 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <fmt/format.h>
 #include <fstream>
 #include <limits>
+#include <linux/magic.h>
+#include <linux/memfd.h>
 #include <optional>
 #include <poll.h>
 #include <signal.h>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/statfs.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <utility>
 #include <vector>
 #include "shm_numa.h"
+
+#ifndef MFD_HUGETLB
+#define MFD_HUGETLB 0x0004U
+#endif
+#ifndef MFD_HUGE_SHIFT
+#define MFD_HUGE_SHIFT 26
+#endif
+#ifndef MFD_HUGE_2MB
+#define MFD_HUGE_2MB (21U << MFD_HUGE_SHIFT)
+#endif
 
 #ifdef MEMFD_REGISTER_HAS_ASCEND
 #include <acl/acl.h>
@@ -40,6 +55,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr std::uint32_t kWireMagic = 0x4d465244;  // MFRD
+constexpr size_t kHuge2MBytes = 2ULL * 1024 * 1024;
 #ifndef MEMFD_REGISTER_HAS_ASCEND
 constexpr std::int64_t kRuntimeUnavailable = -1000000;
 #endif
@@ -58,6 +74,11 @@ enum class RegistrationMode {
     Serial,
 };
 
+enum class PageMode {
+    Base,
+    Huge2M,
+};
+
 struct Message {
     std::uint32_t magic{kWireMagic};
     MessageKind kind{MessageKind::Abort};
@@ -74,6 +95,7 @@ struct Options {
     size_t timeoutSeconds{600};
     std::optional<std::vector<size_t>> numaNodes{};
     RegistrationMode registrationMode{RegistrationMode::Concurrent};
+    PageMode pageMode{PageMode::Base};
 };
 
 struct Segment {
@@ -85,6 +107,14 @@ struct Segment {
 struct Channel {
     int parent{-1};
     int child{-1};
+};
+
+struct MappingInfo {
+    size_t kernelPageKb{0};
+    size_t mmuPageKb{0};
+    size_t sharedHugetlbKb{0};
+    size_t privateHugetlbKb{0};
+    std::string vmFlags{};
 };
 
 template <typename... Args>
@@ -158,6 +188,7 @@ void PrintHelp(const char* program)
         "  --device-offset N     Device ID of rank 0 (default: 0)\n"
         "  --numa-nodes LIST     Ordered NUMA IDs, e.g. 0-7 (default: auto)\n"
         "  --registration-mode M concurrent or serial (default: concurrent)\n"
+        "  --page-mode M         base or hugetlb-2m (default: base)\n"
         "  --timeout-seconds N   IPC/setup timeout (default: 600)\n"
         "  -h, --help            Show this help\n",
         program);
@@ -199,6 +230,14 @@ Options ParseOptions(int argc, char** argv)
                 options.registrationMode = RegistrationMode::Serial;
             } else {
                 throw std::invalid_argument("--registration-mode must be concurrent or serial");
+            }
+        } else if (option == "--page-mode") {
+            if (value == "base") {
+                options.pageMode = PageMode::Base;
+            } else if (value == "hugetlb-2m") {
+                options.pageMode = PageMode::Huge2M;
+            } else {
+                throw std::invalid_argument("--page-mode must be base or hugetlb-2m");
             }
         } else if (option == "--timeout-seconds") {
             options.timeoutSeconds = static_cast<size_t>(ParseUnsigned(value, option));
@@ -277,6 +316,98 @@ const char* RegistrationModeName(RegistrationMode mode)
     return mode == RegistrationMode::Serial ? "serial" : "concurrent";
 }
 
+const char* PageModeName(PageMode mode) { return mode == PageMode::Huge2M ? "hugetlb-2m" : "base"; }
+
+size_t BackingPageSize(PageMode mode)
+{
+    return mode == PageMode::Huge2M ? kHuge2MBytes : shm_numa::PageSize();
+}
+
+void ReadSmapsKb(const std::string& line, std::string_view prefix, size_t& value)
+{
+    if (line.compare(0, prefix.size(), prefix) != 0) { return; }
+    std::istringstream input(line.substr(prefix.size()));
+    input >> value;
+}
+
+std::optional<MappingInfo> ReadMappingInfo(void* address)
+{
+    std::ifstream input("/proc/self/smaps");
+    if (!input) { return std::nullopt; }
+    const auto target = static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(address));
+    MappingInfo result;
+    bool found = false;
+    std::string line;
+    while (std::getline(input, line)) {
+        unsigned long long begin = 0;
+        unsigned long long end = 0;
+        if (std::sscanf(line.c_str(), "%llx-%llx", &begin, &end) == 2) {
+            if (found) { return result; }
+            found = target >= begin && target < end;
+            continue;
+        }
+        if (!found) { continue; }
+        ReadSmapsKb(line, "KernelPageSize:", result.kernelPageKb);
+        ReadSmapsKb(line, "MMUPageSize:", result.mmuPageKb);
+        ReadSmapsKb(line, "Shared_Hugetlb:", result.sharedHugetlbKb);
+        ReadSmapsKb(line, "Private_Hugetlb:", result.privateHugetlbKb);
+        constexpr std::string_view prefix = "VmFlags:";
+        if (line.compare(0, prefix.size(), prefix) == 0) {
+            const auto first = line.find_first_not_of(" \t", prefix.size());
+            result.vmFlags = first == std::string::npos ? "" : line.substr(first);
+        }
+    }
+    return found ? std::optional<MappingInfo>(result) : std::nullopt;
+}
+
+bool HasVmFlag(const std::string& flags, std::string_view expected)
+{
+    std::istringstream input(flags);
+    std::string flag;
+    while (input >> flag) {
+        if (flag == expected) { return true; }
+    }
+    return false;
+}
+
+std::int64_t VerifyPageBacking(size_t rank, size_t bytes, PageMode mode, const Segment& segment)
+{
+    struct statfs fileSystem{};
+    if (::fstatfs(segment.fd, &fileSystem) != 0) { return -errno; }
+    const auto mapping = ReadMappingInfo(segment.address);
+    if (!mapping.has_value()) {
+        Log(mode == PageMode::Huge2M,
+            "page backing inspection unavailable: owner={} mode={} cannot find mapping in smaps",
+            rank, PageModeName(mode));
+        return mode == PageMode::Huge2M ? -ENOENT : 0;
+    }
+    const auto& info = *mapping;
+    const auto hugetlbKb = info.sharedHugetlbKb + info.privateHugetlbKb;
+    Log(false,
+        "page_backing owner={} mode={} fs_magic=0x{:x} fs_block_bytes={} kernel_page_kb={} "
+        "mmu_page_kb={} shared_hugetlb_kb={} private_hugetlb_kb={} vm_flags={}",
+        rank, PageModeName(mode), static_cast<std::uint64_t>(fileSystem.f_type),
+        static_cast<std::uint64_t>(fileSystem.f_bsize), info.kernelPageKb, info.mmuPageKb,
+        info.sharedHugetlbKb, info.privateHugetlbKb, info.vmFlags);
+    if (mode != PageMode::Huge2M) { return 0; }
+    const bool hugeFileSystem = static_cast<unsigned long>(fileSystem.f_type) ==
+                                static_cast<unsigned long>(HUGETLBFS_MAGIC);
+    const bool hugeBlock = static_cast<size_t>(fileSystem.f_bsize) == kHuge2MBytes;
+    const bool hugeVm = HasVmFlag(info.vmFlags, "ht");
+    const bool fullyBacked =
+        hugetlbKb <= std::numeric_limits<size_t>::max() / 1024 && hugetlbKb * 1024 == bytes;
+    if (!hugeFileSystem || !hugeBlock || !hugeVm || !fullyBacked) {
+        Log(true,
+            "hugetlb verification failed: owner={} expected_bytes={} hugetlb_bytes={} "
+            "hugetlbfs={} huge_block={} vmflag_ht={}",
+            rank, bytes, hugetlbKb * 1024, hugeFileSystem, hugeBlock, hugeVm);
+        return -EINVAL;
+    }
+    Log(false, "hugetlb verified: owner={} page_bytes={} backed_bytes={}", rank, kHuge2MBytes,
+        bytes);
+    return 0;
+}
+
 bool SendMessage(int socket, const Message& message, int fd = -1)
 {
     iovec io{const_cast<Message*>(&message), sizeof(message)};
@@ -335,10 +466,13 @@ bool ReceiveMessage(int socket, Message& message, int& fd, int timeoutMs)
     return true;
 }
 
-std::int64_t CreateLocalSegment(size_t rank, size_t bytes, size_t numaNode, Segment& segment)
+std::int64_t CreateLocalSegment(size_t rank, size_t bytes, size_t numaNode, PageMode pageMode,
+                                Segment& segment)
 {
     const auto name = "ucm_cache2_register_probe_data_" + std::to_string(rank);
-    segment.fd = ::memfd_create(name.c_str(), MFD_ALLOW_SEALING | MFD_CLOEXEC);
+    unsigned int flags = MFD_ALLOW_SEALING | MFD_CLOEXEC;
+    if (pageMode == PageMode::Huge2M) { flags |= MFD_HUGETLB | MFD_HUGE_2MB; }
+    segment.fd = ::memfd_create(name.c_str(), flags);
     if (segment.fd < 0) { return -errno; }
     if (bytes > static_cast<size_t>(std::numeric_limits<off_t>::max())) { return -EOVERFLOW; }
     if (::ftruncate(segment.fd, static_cast<off_t>(bytes)) != 0) { return -errno; }
@@ -354,7 +488,7 @@ std::int64_t CreateLocalSegment(size_t rank, size_t bytes, size_t numaNode, Segm
         Log(true, "[rank={}] NUMA bind failed: {}", rank, error.what());
         return errno == 0 ? -EIO : -errno;
     }
-    const auto pageSize = shm_numa::PageSize();
+    const auto pageSize = BackingPageSize(pageMode);
     constexpr size_t kProgressBytes = 16ULL * 1024 * 1024 * 1024;
     auto* base = static_cast<volatile unsigned char*>(segment.address);
     size_t nextProgress = std::min(bytes, kProgressBytes);
@@ -374,7 +508,7 @@ std::int64_t CreateLocalSegment(size_t rank, size_t bytes, size_t numaNode, Segm
             nextProgress += kProgressBytes;
         }
     }
-    return 0;
+    return VerifyPageBacking(rank, bytes, pageMode, segment);
 }
 
 std::int64_t MapPeerSegment(int fd, size_t bytes, Segment& segment)
@@ -489,7 +623,9 @@ std::int64_t RegisterAndLog(size_t owner, int32_t device, size_t segmentRank, si
     bool runtimeInitialized = false;
     std::int64_t status = InitRuntime();
     if (status == 0) { runtimeInitialized = true; }
-    if (status == 0) { status = CreateLocalSegment(rank, rankBytes, numaNode, segments[rank]); }
+    if (status == 0) {
+        status = CreateLocalSegment(rank, rankBytes, numaNode, options.pageMode, segments[rank]);
+    }
     std::uint64_t registeredSegments = 0;
     std::uint64_t registeredBytes = 0;
     if (status != 0) {
@@ -759,7 +895,7 @@ int main(int argc, char** argv)
                                             " is not online, memory-bearing, and allowed");
             }
         }
-        const auto pageSize = shm_numa::PageSize();
+        const auto pageSize = BackingPageSize(options.pageMode);
         const auto requestedRankBytes = options.totalBytes / options.ranks;
         if (requestedRankBytes > std::numeric_limits<size_t>::max() - (pageSize - 1)) {
             throw std::invalid_argument("per-rank size exceeds size_t");
@@ -776,11 +912,11 @@ int main(int argc, char** argv)
         Log(false,
             "PLAN ranks={} total_bytes={} requested_rank_bytes={} rank_stride={} "
             "mapped_total_bytes={} device_offset={} numa_nodes={} registration_mode={} "
-            "timeout_seconds={}",
+            "page_mode={} backing_page_bytes={} timeout_seconds={}",
             options.ranks, options.totalBytes, requestedRankBytes, rankBytes,
             static_cast<std::uint64_t>(rankBytes) * options.ranks, options.deviceOffset,
             JoinNodes(nodes), RegistrationModeName(options.registrationMode),
-            options.timeoutSeconds);
+            PageModeName(options.pageMode), pageSize, options.timeoutSeconds);
         for (size_t rank = 0; rank < options.ranks; ++rank) {
             Log(false, "PLAN rank={} device={} numa={}", rank, options.deviceOffset + rank,
                 rankNodes[rank]);
