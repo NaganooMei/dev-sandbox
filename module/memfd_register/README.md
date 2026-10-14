@@ -103,6 +103,14 @@ for node in {0..7}; do
 done
 ```
 
+Check memory usage and HugeTLB state on every NUMA node. The `node*` glob checks all nodes; use
+`node{6,7}` instead when only nodes 6 and 7 are needed:
+
+```bash
+grep -EH 'Node [0-9]+ (MemTotal|MemFree|MemUsed|AnonPages|FilePages|AnonHugePages|HugePages)' \
+  /sys/devices/system/node/node*/meminfo
+```
+
 Do not start the test unless every node reports `total=16384 free=16384` and the global total and
 free counts are both 131072. A smaller value means that the kernel could reserve only part of the
 request because of memory pressure or fragmentation.
