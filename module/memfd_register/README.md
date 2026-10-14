@@ -115,13 +115,47 @@ total and free pages and the global total is at least 131072.
 ```bash
 grep -E 'HugePages|Hugepagesize|Hugetlb' /proc/meminfo
 
+required_per_node=16384
+huge_ready=1
 for node in {0..7}; do
   path=/sys/devices/system/node/node${node}/hugepages/hugepages-2048kB
   total=$(cat "$path/nr_hugepages")
   free=$(cat "$path/free_hugepages")
-  printf 'node%s total=%s free=%s\n' "$node" "$total" "$free"
-  test "$total" -ge 16384 && test "$free" -ge 16384 || exit 1
+  if [ "$total" -ge "$required_per_node" ] && [ "$free" -ge "$required_per_node" ]; then
+    printf 'node%s total=%s free=%s READY\n' "$node" "$total" "$free"
+  else
+    available=$total
+    [ "$free" -lt "$available" ] && available=$free
+    missing=$((required_per_node - available))
+    [ "$missing" -lt 0 ] && missing=0
+    printf 'node%s total=%s free=%s INSUFFICIENT missing=%s_pages=%s_MiB\n' \
+      "$node" "$total" "$free" "$missing" "$((missing * 2))"
+    huge_ready=0
+  fi
 done
+
+global_total=$(awk '$1 == "HugePages_Total:" {print $2}' /proc/meminfo)
+global_free=$(awk '$1 == "HugePages_Free:" {print $2}' /proc/meminfo)
+if [ "$huge_ready" -eq 1 ] && [ "$global_total" -ge 131072 ] && [ "$global_free" -ge 131072 ]; then
+  echo 'HUGETLB READY: safe to start the 256 GiB test'
+else
+  echo 'HUGETLB INSUFFICIENT: do not start the 256 GiB test'
+fi
+```
+
+If a node is short, inspect its normal-memory pressure and high-order free blocks. On a dedicated
+idle machine, a global compaction followed by a retry may recover fragmented 2 MiB blocks. Global
+compaction can disturb running workloads, so do not run it on a busy service node.
+
+```bash
+grep -E 'MemTotal|MemFree|MemUsed|AnonPages|FilePages|HugePages' \
+  /sys/devices/system/node/node7/meminfo
+grep '^Node 7' /proc/buddyinfo
+
+# Dedicated idle machine only.
+echo 1 > /proc/sys/vm/compact_memory
+echo 16384 > \
+  /sys/devices/system/node/node7/hugepages/hugepages-2048kB/nr_hugepages
 ```
 
 Build and run the full serial experiment:
