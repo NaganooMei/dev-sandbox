@@ -115,6 +115,51 @@ Do not start the test unless every node reports `total=16384 free=16384` and the
 free counts are both 131072. A smaller value means that the kernel could reserve only part of the
 request because of memory pressure or fragmentation.
 
+### Recover from a partial HugeTLB reservation
+
+If one NUMA node reports fewer pages than requested, release the existing test reservation before
+retrying. The following command is safe only when no other workload owns HugeTLB pages; replace
+`0` with the machine's previous per-node target when the host already had a HugeTLB pool:
+
+```bash
+for node in {0..7}; do
+  echo 0 > /sys/devices/system/node/node${node}/hugepages/hugepages-2048kB/nr_hugepages
+done
+```
+
+On a dedicated idle test machine, reclaim the host page cache and ask the kernel to compact memory.
+`drop_caches` is host-wide and may temporarily degrade the performance of other workloads, even
+when run from a privileged container:
+
+```bash
+sync
+echo 3 > /proc/sys/vm/drop_caches
+echo 1 > /proc/sys/vm/compact_memory
+```
+
+Then retry the reservation. For a 512 GiB pool spread evenly over eight NUMA nodes, each node needs
+32768 2 MiB pages:
+
+```bash
+for node in {0..7}; do
+  echo 32768 > /sys/devices/system/node/node${node}/hugepages/hugepages-2048kB/nr_hugepages
+done
+```
+
+If a node still cannot reach the target, inspect its local memory and buddy allocator state. Page
+cache can be reclaimed by the commands above, but anonymous memory normally requires stopping or
+moving the process that owns it:
+
+```bash
+grep -E 'Node 6 (MemTotal|MemFree|MemUsed|AnonPages|FilePages|AnonHugePages|HugePages)' \
+  /sys/devices/system/node/node6/meminfo
+
+grep '^Node 6' /proc/buddyinfo
+```
+
+After retrying, use the earlier global and per-node checks and require every node's `total` and
+`free` values to match the requested target before starting the registration test.
+
 Build and run the full serial experiment:
 
 ```bash
